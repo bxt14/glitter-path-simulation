@@ -36,7 +36,7 @@ export default function App() {
           <p className="mt-0.5 text-[11px] text-[#66707e]">点击发光体 / 太阳 / 眼睛 / 金属面可选中并拖动 · 空白处拖动旋转视角</p>
         </div>
 
-        <InfoPanel />
+        <InfoPanel params={params} />
 
         {/* 观察者视角小窗：透明视口区，由同一 WebGLRenderer 第二遍 setViewport/setScissor 渲染 */}
         <div className="absolute bottom-4 right-4 z-10 overflow-hidden rounded-xl border border-[#2a3242] shadow-2xl">

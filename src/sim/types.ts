@@ -9,11 +9,11 @@ export interface Vec3 {
 
 export interface SimParams {
   lightMode: LightMode
-  /** 平行光：方位角（度，0-360） */
+  /** 平行光：方位角（度，0-360，XY 平面内从 +x 起算） */
   azimuth: number
-  /** 平行光：仰角（度，5-90） */
+  /** 平行光：仰角（度，5-90，相对 XY 平面） */
   elevation: number
-  /** 点光源位置 */
+  /** 点光源位置（z 为竖直高度，z ≥ 0.15） */
   pointLightPos: Vec3
   surfaceType: SurfaceType
   plateWidth: number
@@ -21,25 +21,26 @@ export interface SimParams {
   /** 沟槽角 θ（度，0-180） */
   grooveAngle: number
   diskRadius: number
+  /** 观察者位置（z 为竖直高度，z ≥ 0.15） */
   eyePos: Vec3
-  /** 反射面中心（XZ 平面，y 恒为 0） */
+  /** 反射面中心（XY 平面，z 恒为 0） */
   centerX: number
-  centerZ: number
+  centerY: number
 }
 
 export const DEFAULT_PARAMS: SimParams = {
   lightMode: 'parallel',
   azimuth: 60,
   elevation: 55,
-  pointLightPos: { x: -2.5, y: 4.5, z: 2.0 },
+  pointLightPos: { x: -2.5, y: 2.0, z: 4.5 },
   surfaceType: 'plate',
   plateWidth: 4,
   plateDepth: 3,
   grooveAngle: 0,
-  diskRadius: 1.5,
-  eyePos: { x: 2.5, y: 2.0, z: 3.5 },
+  diskRadius: 2,
+  eyePos: { x: 2.5, y: 3.5, z: 2.0 },
   centerX: 0,
-  centerZ: 0,
+  centerY: 0,
 }
 
 export interface Preset {
@@ -59,7 +60,7 @@ export const PRESETS: Preset[] = [
       elevation: 82,
       surfaceType: 'plate',
       grooveAngle: 0,
-      eyePos: { x: 2.2, y: 2.4, z: 3.2 },
+      eyePos: { x: 2.2, y: 3.2, z: 2.4 },
     },
   },
   {
@@ -72,7 +73,7 @@ export const PRESETS: Preset[] = [
       elevation: 14,
       surfaceType: 'plate',
       grooveAngle: 90,
-      eyePos: { x: 0.4, y: 1.8, z: 3.8 },
+      eyePos: { x: 0.4, y: 3.8, z: 1.8 },
     },
   },
   {
@@ -81,9 +82,9 @@ export const PRESETS: Preset[] = [
     params: {
       ...DEFAULT_PARAMS,
       lightMode: 'point',
-      pointLightPos: { x: 0.0, y: 5.0, z: 0.0 },
+      pointLightPos: { x: 0.0, y: 0.0, z: 5.0 },
       surfaceType: 'disk',
-      eyePos: { x: 2.0, y: 2.0, z: 3.0 },
+      eyePos: { x: 2.0, y: 3.0, z: 2.0 },
     },
   },
   {
@@ -92,9 +93,9 @@ export const PRESETS: Preset[] = [
     params: {
       ...DEFAULT_PARAMS,
       lightMode: 'point',
-      pointLightPos: { x: 4.0, y: 0.7, z: 1.5 },
+      pointLightPos: { x: 4.0, y: 1.5, z: 0.7 },
       surfaceType: 'disk',
-      eyePos: { x: 2.5, y: 1.6, z: 3.0 },
+      eyePos: { x: 2.5, y: 3.0, z: 1.6 },
     },
   },
 ]

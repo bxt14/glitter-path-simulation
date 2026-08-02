@@ -73,8 +73,8 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
         ) : (
           <div className="space-y-3">
             <SliderRow label="光源 X" value={p.pointLightPos.x} min={-8} max={8} step={0.1} onChange={(v) => onChange({ pointLightPos: { ...p.pointLightPos, x: v } })} />
-            <SliderRow label="光源 Y" value={p.pointLightPos.y} min={0.15} max={8} step={0.05} onChange={(v) => onChange({ pointLightPos: { ...p.pointLightPos, y: v } })} />
-            <SliderRow label="光源 Z" value={p.pointLightPos.z} min={-8} max={8} step={0.1} onChange={(v) => onChange({ pointLightPos: { ...p.pointLightPos, z: v } })} />
+            <SliderRow label="光源 Y" value={p.pointLightPos.y} min={-8} max={8} step={0.1} onChange={(v) => onChange({ pointLightPos: { ...p.pointLightPos, y: v } })} />
+            <SliderRow label="光源 Z（高度）" value={p.pointLightPos.z} min={0.15} max={8} step={0.05} onChange={(v) => onChange({ pointLightPos: { ...p.pointLightPos, z: v } })} />
           </div>
         )}
       </section>
@@ -101,10 +101,10 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
             <SliderRow label="沟槽角 θ" value={p.grooveAngle} min={0} max={180} step={1} unit="°" onChange={(v) => onChange({ grooveAngle: v })} />
           </div>
         ) : (
-          <SliderRow label="半径" value={p.diskRadius} min={0.5} max={4} step={0.05} onChange={(v) => onChange({ diskRadius: v })} />
+          <SliderRow label="半径" value={p.diskRadius} min={0.5} max={10} step={0.05} onChange={(v) => onChange({ diskRadius: v })} />
         )}
         <p className="font-mono text-[11px] text-[#66707e]">
-          板心 C = ({p.centerX.toFixed(2)}, {p.centerZ.toFixed(2)}) · 可拖动面板移动
+          板心 C = ({p.centerX.toFixed(2)}, {p.centerY.toFixed(2)}, 0) · 可拖动面板移动
         </p>
       </section>
 
@@ -119,8 +119,8 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
         </SectionTitle>
         <div className="space-y-3">
           <SliderRow label="眼睛 X" value={p.eyePos.x} min={-8} max={8} step={0.1} onChange={(v) => onChange({ eyePos: { ...p.eyePos, x: v } })} />
-          <SliderRow label="眼睛 Y" value={p.eyePos.y} min={0.15} max={8} step={0.05} onChange={(v) => onChange({ eyePos: { ...p.eyePos, y: v } })} />
-          <SliderRow label="眼睛 Z" value={p.eyePos.z} min={-8} max={8} step={0.1} onChange={(v) => onChange({ eyePos: { ...p.eyePos, z: v } })} />
+          <SliderRow label="眼睛 Y" value={p.eyePos.y} min={-8} max={8} step={0.1} onChange={(v) => onChange({ eyePos: { ...p.eyePos, y: v } })} />
+          <SliderRow label="眼睛 Z（高度）" value={p.eyePos.z} min={0.15} max={8} step={0.05} onChange={(v) => onChange({ eyePos: { ...p.eyePos, z: v } })} />
         </div>
       </section>
 

@@ -8,13 +8,15 @@ export interface DragUpdate {
   pointLightPos?: { x: number; y: number; z: number }
   eyePos?: { x: number; y: number; z: number }
   centerX?: number
-  centerZ?: number
+  centerY?: number
   azimuth?: number
   elevation?: number
 }
 
 const SUN_R = 6 // 太阳把手轨道半径
-const MIN_Y = 0.15 // 点光源/眼睛最低高度
+const MIN_Z = 0.15 // 点光源/眼睛最低高度（竖直方向为 z）
+const GIZMO_SIZE = 100 // 导航坐标轴指示器尺寸（CSS 像素）
+const GIZMO_MARGIN = 14
 
 /* ------------------------------------------------------------------ */
 /* 着色器：逐 fragment 在世界坐标中计算 f(Q) = (p̂ − q̂)·t̂，|f|≈0 处发光 */
@@ -31,7 +33,7 @@ void main() {
 const FRAG = /* glsl */ `
 uniform int uLightMode;      // 0 = 平行光, 1 = 点光源
 uniform vec3 uPointPos;      // 点光源位置 L
-uniform vec3 uParallelDir;   // 平行光传播方向 d̂ (y < 0)
+uniform vec3 uParallelDir;   // 平行光传播方向 d̂ (z < 0)
 uniform vec3 uEye;           // 眼睛位置 E
 uniform vec3 uCenter;        // 反射面中心 C
 uniform int uSurfaceType;    // 0 = 拉丝板, 1 = 同心圆盘
@@ -52,16 +54,16 @@ void main() {
   vec3 p = (uLightMode == 1) ? normalize(Q - uPointPos) : uParallelDir;
   vec3 q = normalize(uEye - Q);
 
-  // t̂: 沟槽方向（XZ 平面内）；grooveCoord = 垂直沟槽方向坐标，用于程序化拉丝纹理
+  // t̂: 沟槽方向（XY 平面内，z 轴竖直）；grooveCoord = 垂直沟槽方向坐标，用于程序化拉丝纹理
   vec3 t;
   float grooveCoord;
   if (uSurfaceType == 0) {
-    t = vec3(cos(uGrooveAngle), 0.0, sin(uGrooveAngle));
-    grooveCoord = rel.x * (-t.z) + rel.z * t.x;
+    t = vec3(cos(uGrooveAngle), sin(uGrooveAngle), 0.0);
+    grooveCoord = rel.x * (-t.y) + rel.y * t.x;
   } else {
-    float r = length(rel.xz);
-    // t̂ = normalize(ŷ × (Q−C)) = normalize(rz, 0, −rx)；Q=C 处退化为 0 → 圆心天然发亮
-    t = (r < 1e-4) ? vec3(0.0) : vec3(rel.z, 0.0, -rel.x) / r;
+    float r = length(rel.xy);
+    // t̂ = normalize(ẑ × (Q−C)) = normalize(−ry, rx, 0)；Q=C 处退化为 0 → 圆心天然发亮
+    t = (r < 1e-4) ? vec3(0.0) : vec3(-rel.y, rel.x, 0.0) / r;
     grooveCoord = r;
   }
 
@@ -73,11 +75,11 @@ void main() {
 
   // 程序化金属底纹：沿沟槽垂直方向的高频正弦条纹 + 细微噪点（纹理方向严格跟随沟槽几何）
   float stripe = sin(grooveCoord * 90.0);
-  float fine = sin(grooveCoord * 340.0 + hash(floor(Q.xz * 60.0)) * 6.2831);
-  float baseGray = 0.125 + 0.030 * stripe + 0.012 * fine + 0.018 * (hash(floor(Q.xz * 200.0)) - 0.5);
+  float fine = sin(grooveCoord * 340.0 + hash(floor(Q.xy * 60.0)) * 6.2831);
+  float baseGray = 0.125 + 0.030 * stripe + 0.012 * fine + 0.018 * (hash(floor(Q.xy * 200.0)) - 0.5);
 
-  // 简化 Blinn-Phong（N = ŷ），低调暗灰金属，亮线是视觉主角
-  vec3 N = vec3(0.0, 1.0, 0.0);
+  // 简化 Blinn-Phong（N = ẑ），低调暗灰金属，亮线是视觉主角
+  vec3 N = vec3(0.0, 0.0, 1.0);
   vec3 Ld = (uLightMode == 1) ? normalize(uPointPos - Q) : -uParallelDir;
   vec3 H = normalize(Ld + q);
   float diff = max(dot(N, Ld), 0.0);
@@ -85,7 +87,7 @@ void main() {
   vec3 baseColor = vec3(baseGray) * (0.5 + 0.5 * diff) + vec3(spec);
 
   // 暖金亮线，加法叠加 + 高频 sparkle 闪烁
-  float sp = hash(floor(Q.xz * 140.0) + vec2(floor(uTime * 6.0)));
+  float sp = hash(floor(Q.xy * 140.0) + vec2(floor(uTime * 6.0)));
   float sparkle = 0.75 + 0.25 * sp;
   vec3 glowColor = vec3(1.0, 0.72, 0.35) * 2.5 * glow * sparkle;
 
@@ -104,6 +106,8 @@ export class GlitterScene {
   private scene = new THREE.Scene()
   private mainCam: THREE.PerspectiveCamera
   private eyeCam: THREE.PerspectiveCamera
+  private gizmoScene = new THREE.Scene()
+  private gizmoCam = new THREE.PerspectiveCamera(40, 1, 0.1, 10)
   private orbit: OrbitControls
   private tc: TransformControls
   private raycaster = new THREE.Raycaster()
@@ -149,10 +153,12 @@ export class GlitterScene {
     this.scene.fog = new THREE.Fog(0x0b0e13, 18, 42)
 
     this.mainCam = new THREE.PerspectiveCamera(50, 1, 0.1, 200)
-    this.mainCam.position.set(6.2, 4.6, 7.2)
+    this.mainCam.up.set(0, 0, 1) // z 轴竖直
+    this.mainCam.position.set(6.2, 7.2, 4.6)
     this.mainCam.layers.enable(1) // 主相机可见 layer 0 + 1（眼睛把手在 layer 1）
 
     this.eyeCam = new THREE.PerspectiveCamera(55, 320 / 208, 0.05, 200)
+    this.eyeCam.up.set(0, 0, 1)
 
     this.orbit = new OrbitControls(this.mainCam, this.renderer.domElement)
     this.orbit.enableDamping = true
@@ -161,9 +167,10 @@ export class GlitterScene {
     this.orbit.minDistance = 2
     this.orbit.maxDistance = 30
 
-    // 暗色低存在感网格地面
+    // 暗色低存在感网格地面（GridHelper 默认在 XZ 平面，旋转到 XY 平面）
     const grid = new THREE.GridHelper(40, 40, 0x273043, 0x171e2c)
-    grid.position.y = -0.01
+    grid.rotation.x = Math.PI / 2
+    grid.position.z = -0.01
     const gm = grid.material as THREE.Material
     gm.transparent = true
     gm.opacity = 0.55
@@ -177,7 +184,7 @@ export class GlitterScene {
       uniforms: {
         uLightMode: { value: 0 },
         uPointPos: { value: new THREE.Vector3() },
-        uParallelDir: { value: new THREE.Vector3(0, -1, 0) },
+        uParallelDir: { value: new THREE.Vector3(0, 0, -1) },
         uEye: { value: new THREE.Vector3() },
         uCenter: { value: new THREE.Vector3() },
         uSurfaceType: { value: 0 },
@@ -186,11 +193,10 @@ export class GlitterScene {
       },
       side: THREE.DoubleSide,
     })
+    // PlaneGeometry/CircleGeometry 默认即在 XY 平面、法线 +z，无需旋转
     this.plateMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.surfaceMat)
-    this.plateMesh.geometry.rotateX(-Math.PI / 2)
     this.plateMesh.userData.dragId = 'surface'
     this.diskMesh = new THREE.Mesh(new THREE.CircleGeometry(1, 160), this.surfaceMat)
-    this.diskMesh.geometry.rotateX(-Math.PI / 2)
     this.diskMesh.userData.dragId = 'surface'
     this.surfaceGroup.userData.dragId = 'surface'
     this.surfaceGroup.add(this.plateMesh, this.diskMesh)
@@ -201,6 +207,9 @@ export class GlitterScene {
     this.buildSunHandle()
     this.buildEyeHandle()
     this.scene.add(this.pointLightHandle, this.sunHandle, this.eyeHandle, this.pointLightObj)
+
+    /* ---------------- 导航坐标轴指示器（独立小场景，第三遍渲染） ---------------- */
+    this.buildGizmo()
 
     /* ---------------- 光线指示线 ---------------- */
     const mkLine = (color: number, opacity: number) =>
@@ -279,9 +288,42 @@ export class GlitterScene {
     this.eyeCone.geometry.rotateX(Math.PI / 2) // 顶点指向 +z，配合 lookAt 指向板心
     this.eyeCone.position.z = 0.2
     this.eyeHandle.add(body, pupil, this.eyeCone)
+    this.eyeHandle.up.set(0, 0, 1) // z 轴竖直，lookAt 时保持正确滚转角
     this.eyeHandle.userData.dragId = 'eye'
     // 眼睛把手整体放 layer 1：主相机可见，观察者相机不可见（避免自遮挡）
     this.eyeHandle.traverse((o) => o.layers.set(1))
+  }
+
+  /* ---------------- 导航坐标轴指示器：XYZ 三轴 + 字母标签 Sprite ---------------- */
+  private buildGizmo() {
+    const axes: Array<{ dir: THREE.Vector3; color: number; label: string }> = [
+      { dir: new THREE.Vector3(1, 0, 0), color: 0xc05a52, label: 'X' }, // 低饱和暖红
+      { dir: new THREE.Vector3(0, 1, 0), color: 0x6da26d, label: 'Y' }, // 低饱和绿
+      { dir: new THREE.Vector3(0, 0, 1), color: 0x5f83c4, label: 'Z' }, // 低饱和蓝
+    ]
+    const LEN = 0.85
+    for (const { dir, color, label } of axes) {
+      const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), dir.clone().multiplyScalar(LEN)])
+      this.gizmoScene.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color })))
+      // 轴端小球
+      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 8), new THREE.MeshBasicMaterial({ color }))
+      tip.position.copy(dir).multiplyScalar(LEN)
+      this.gizmoScene.add(tip)
+      // 字母标签：canvas 纹理 Sprite
+      const canvas = document.createElement('canvas')
+      canvas.width = canvas.height = 64
+      const ctx = canvas.getContext('2d')!
+      ctx.font = 'bold 44px system-ui, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`
+      ctx.fillText(label, 32, 34)
+      const tex = new THREE.CanvasTexture(canvas)
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }))
+      sprite.position.copy(dir).multiplyScalar(LEN + 0.22)
+      sprite.scale.setScalar(0.34)
+      this.gizmoScene.add(sprite)
+    }
   }
 
   /* ---------------- 选中与拖动 ---------------- */
@@ -324,28 +366,28 @@ export class GlitterScene {
     const round = (v: number) => Math.round(v * 1000) / 1000
 
     if (id === 'pointLight') {
-      p.y = Math.max(p.y, MIN_Y)
+      p.z = Math.max(p.z, MIN_Z)
       p.x = clamp(p.x, -8, 8)
-      p.z = clamp(p.z, -8, 8)
+      p.y = clamp(p.y, -8, 8)
       this.onDragUpdate({ pointLightPos: { x: round(p.x), y: round(p.y), z: round(p.z) } })
     } else if (id === 'eye') {
-      p.y = Math.max(p.y, MIN_Y)
+      p.z = Math.max(p.z, MIN_Z)
       p.x = clamp(p.x, -8, 8)
-      p.z = clamp(p.z, -8, 8)
+      p.y = clamp(p.y, -8, 8)
       this.onDragUpdate({ eyePos: { x: round(p.x), y: round(p.y), z: round(p.z) } })
     } else if (id === 'surface') {
-      p.y = 0
+      p.z = 0
       p.x = clamp(p.x, -6, 6)
-      p.z = clamp(p.z, -6, 6)
-      this.onDragUpdate({ centerX: round(p.x), centerZ: round(p.z) })
+      p.y = clamp(p.y, -6, 6)
+      this.onDragUpdate({ centerX: round(p.x), centerY: round(p.y) })
     } else if (id === 'sun') {
       // 投影到以板心为球心、SUN_R 为半径的球面，回算方位角/仰角
       const c = this.surfaceGroup.position
       const s = new THREE.Vector3().subVectors(p, c)
       if (s.lengthSq() < 1e-6) return
       s.normalize()
-      const el = Math.asin(clamp(s.y, Math.sin(5 * DEG), 1)) / DEG
-      let az = Math.atan2(s.z, s.x) / DEG
+      const el = Math.asin(clamp(s.z, Math.sin(5 * DEG), 1)) / DEG
+      let az = Math.atan2(s.y, s.x) / DEG
       if (az < 0) az += 360
       this.positionSun(az, el)
       this.onDragUpdate({ azimuth: round(az), elevation: round(el) })
@@ -353,10 +395,11 @@ export class GlitterScene {
   }
 
   /* ---------------- 参数 → 场景 ---------------- */
+  /** 太阳方向：方位角 az 在 XY 平面内从 +x 起算，仰角 el 相对 XY 平面 */
   private sunDir(azimuthDeg: number, elevationDeg: number) {
     const az = azimuthDeg * DEG
     const el = elevationDeg * DEG
-    return new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az))
+    return new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el))
   }
 
   private positionSun(azimuth: number, elevation: number) {
@@ -376,7 +419,7 @@ export class GlitterScene {
 
     if (dragId !== 'pointLight') this.pointLightHandle.position.set(p.pointLightPos.x, p.pointLightPos.y, p.pointLightPos.z)
     if (dragId !== 'eye') this.eyeHandle.position.set(p.eyePos.x, p.eyePos.y, p.eyePos.z)
-    if (dragId !== 'surface') this.surfaceGroup.position.set(p.centerX, 0, p.centerZ)
+    if (dragId !== 'surface') this.surfaceGroup.position.set(p.centerX, p.centerY, 0)
     if (dragId !== 'sun') this.positionSun(p.azimuth, p.elevation)
 
     this.pointLightHandle.visible = p.lightMode === 'point'
@@ -389,16 +432,14 @@ export class GlitterScene {
     this.plateMesh.visible = p.surfaceType === 'plate'
     this.diskMesh.visible = p.surfaceType === 'disk'
 
-    // 几何尺寸重建（dispose 旧 geometry）
+    // 几何尺寸重建（dispose 旧 geometry）；默认即在 XY 平面、法线 +z
     const key = `${p.plateWidth}|${p.plateDepth}|${p.diskRadius}`
     if (key !== this.geoKey) {
       this.geoKey = key
       this.plateMesh.geometry.dispose()
       this.plateMesh.geometry = new THREE.PlaneGeometry(p.plateWidth, p.plateDepth)
-      this.plateMesh.geometry.rotateX(-Math.PI / 2)
       this.diskMesh.geometry.dispose()
       this.diskMesh.geometry = new THREE.CircleGeometry(p.diskRadius, 160)
-      this.diskMesh.geometry.rotateX(-Math.PI / 2)
     }
 
     const u = this.surfaceMat.uniforms
@@ -422,7 +463,7 @@ export class GlitterScene {
     // 平行光方向由太阳把手实时位置定义：d̂ = normalize(C − handle)，保证拖动跟手
     const d = new THREE.Vector3().subVectors(center, this.sunHandle.position)
     if (d.lengthSq() > 1e-8) d.normalize()
-    else d.set(0, -1, 0)
+    else d.set(0, 0, -1)
     u.uParallelDir.value.copy(d)
     u.uPointPos.value.copy(this.pointLightHandle.position)
     u.uEye.value.copy(eyePos)
@@ -442,7 +483,8 @@ export class GlitterScene {
       const attr = this.parallelLines.geometry.attributes.position as THREE.BufferAttribute
       let i = 0
       for (let k = -2; k <= 2; k++) {
-        const off = new THREE.Vector3(-d.z, 0, d.x).normalize().multiplyScalar(k * 0.9)
+        // 沟槽平面（XY）内垂直于光方向的水平偏移
+        const off = new THREE.Vector3(-d.y, d.x, 0).normalize().multiplyScalar(k * 0.9)
         const base = new THREE.Vector3().copy(center).add(off)
         const a = new THREE.Vector3().copy(base).addScaledVector(d, -5.5)
         const b = new THREE.Vector3().copy(base).addScaledVector(d, 1.2)
@@ -461,6 +503,12 @@ export class GlitterScene {
     // 观察者相机
     this.eyeCam.position.copy(eyePos)
     this.eyeCam.lookAt(center)
+
+    // 导航坐标轴指示器相机：朝向跟随主相机，固定距离看向原点
+    const gq = this.mainCam.quaternion
+    this.gizmoCam.position.set(0, 0, 2.6).applyQuaternion(gq)
+    this.gizmoCam.up.set(0, 0, 1).applyQuaternion(gq)
+    this.gizmoCam.lookAt(0, 0, 0)
 
     this.render()
   }
@@ -489,6 +537,23 @@ export class GlitterScene {
       this.renderer.setScissor(vx, vy, vw, vh)
       this.renderer.render(this.scene, this.eyeCam)
     }
+
+    // 导航坐标轴指示器：第三遍渲染，固定在画布右上角（CSS 像素，three 内部自行乘 pixelRatio）
+    const gw = GIZMO_SIZE
+    const gh = GIZMO_SIZE
+    if (crect.width > gw + GIZMO_MARGIN && crect.height > gh + GIZMO_MARGIN) {
+      const gx = Math.round(crect.width - gw - GIZMO_MARGIN)
+      const gy = Math.round(crect.height - gh - GIZMO_MARGIN) // GL 原点在左下 → 顶部
+      this.gizmoCam.aspect = gw / gh
+      this.gizmoCam.updateProjectionMatrix()
+      this.renderer.setViewport(gx, gy, gw, gh)
+      this.renderer.setScissor(gx, gy, gw, gh)
+      // 背景透明：不清除颜色（保留主画面），只清深度避免与上一帧串扰
+      this.renderer.autoClear = false
+      this.renderer.clearDepth()
+      this.renderer.render(this.gizmoScene, this.gizmoCam)
+      this.renderer.autoClear = true
+    }
   }
 
   private resize() {
@@ -502,7 +567,7 @@ export class GlitterScene {
   /* ---------------- 物理正确性自检（CPU 复现 shader 公式） ---------------- */
   selfCheck(): string {
     const p = this.params
-    const C = new THREE.Vector3(p.centerX, 0, p.centerZ)
+    const C = new THREE.Vector3(p.centerX, p.centerY, 0)
     const E = new THREE.Vector3(p.eyePos.x, p.eyePos.y, p.eyePos.z)
     const L = new THREE.Vector3(p.pointLightPos.x, p.pointLightPos.y, p.pointLightPos.z)
     const d = this.sunDir(p.azimuth, p.elevation).multiplyScalar(-1) // 传播方向
@@ -513,36 +578,36 @@ export class GlitterScene {
       let th: THREE.Vector3
       if (p.surfaceType === 'plate') {
         const th0 = p.grooveAngle * DEG
-        th = new THREE.Vector3(Math.cos(th0), 0, Math.sin(th0))
+        th = new THREE.Vector3(Math.cos(th0), Math.sin(th0), 0)
       } else {
         const rel = Q.clone().sub(C)
-        const r = Math.hypot(rel.x, rel.z)
-        th = r < 1e-4 ? new THREE.Vector3() : new THREE.Vector3(rel.z, 0, -rel.x).divideScalar(r)
+        const r = Math.hypot(rel.x, rel.y)
+        th = r < 1e-4 ? new THREE.Vector3() : new THREE.Vector3(-rel.y, rel.x, 0).divideScalar(r)
       }
       return ph.sub(qh).dot(th)
     }
 
-    // 镜面反射点 O（平面镜反射定律）
+    // 镜面反射点 O（平面镜 z=0 反射定律）
     let O: THREE.Vector3
     if (p.lightMode === 'point') {
-      const Er = new THREE.Vector3(E.x, -E.y, E.z)
-      const s = L.y / (L.y + E.y)
+      const Er = new THREE.Vector3(E.x, E.y, -E.z)
+      const s = L.z / (L.z + E.z)
       O = L.clone().addScaledVector(Er.clone().sub(L), s)
     } else {
-      const qh = new THREE.Vector3(d.x, -d.y, d.z) // d̂ 经镜面反射后的方向
-      const tt = E.y / qh.y
+      const qh = new THREE.Vector3(d.x, d.y, -d.z) // d̂ 经镜面反射后的方向
+      const tt = E.z / qh.z
       O = E.clone().addScaledVector(qh, -tt)
     }
     const fO = fAt(O)
     const msgs: string[] = []
     const okO = Math.abs(fO) < 1e-6
-    msgs.push(`镜面点 O=(${O.x.toFixed(3)}, 0, ${O.z.toFixed(3)})，|f(O)|=${Math.abs(fO).toExponential(2)} → ${okO ? '通过：亮线必过镜面点' : '失败'}`)
+    msgs.push(`镜面点 O=(${O.x.toFixed(3)}, ${O.y.toFixed(3)}, 0)，|f(O)|=${Math.abs(fO).toExponential(2)} → ${okO ? '通过：亮线必过镜面点' : '失败'}`)
     if (p.surfaceType === 'disk') {
       const fC = fAt(C)
       msgs.push(`圆心 f(C)=${fC} → ${fC === 0 ? '通过：Q=C 处 t̂ 退化，圆心天然发亮' : '失败'}`)
     }
     if (p.lightMode === 'parallel') {
-      msgs.push(`d̂.y=${d.y.toFixed(3)} ${d.y < 0 ? '< 0 → 通过：平行光向下照射' : '→ 失败'}`)
+      msgs.push(`d̂.z=${d.z.toFixed(3)} ${d.z < 0 ? '< 0 → 通过：平行光向下照射' : '→ 失败'}`)
     }
     const summary = `[物理自检] ${msgs.join('；')}`
     console.debug(summary)

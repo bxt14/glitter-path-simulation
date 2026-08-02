@@ -90,18 +90,73 @@ const DEG = Math.PI / 180
 const focalToFov = (f: number) => 2 * Math.atan(12 / f) / DEG
 
 /** 径向渐变 glow 纹理（additive 光晕 sprite 用） */
-function makeGlowTexture(): THREE.CanvasTexture {
-  const S = 128
+/** 太阳纹理：球核 + 光环 + 细环 + 光芒全部烘焙进一张 canvas 纹理（单一 Sprite，永不分离） */
+function makeSunTexture(): THREE.CanvasTexture {
+  const S = 256
+  const C = S / 2
   const canvas = document.createElement('canvas')
   canvas.width = canvas.height = S
   const ctx = canvas.getContext('2d')!
-  const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2)
-  g.addColorStop(0, 'rgba(255, 224, 170, 0.95)')
-  g.addColorStop(0.25, 'rgba(255, 190, 110, 0.5)')
-  g.addColorStop(0.6, 'rgba(255, 150, 60, 0.14)')
-  g.addColorStop(1, 'rgba(255, 140, 50, 0)')
-  ctx.fillStyle = g
+  // 外层光晕
+  const halo = ctx.createRadialGradient(C, C, 0, C, C, C)
+  halo.addColorStop(0, 'rgba(255, 210, 140, 0.55)')
+  halo.addColorStop(0.35, 'rgba(255, 180, 100, 0.22)')
+  halo.addColorStop(0.7, 'rgba(255, 150, 60, 0.07)')
+  halo.addColorStop(1, 'rgba(255, 140, 50, 0)')
+  ctx.fillStyle = halo
   ctx.fillRect(0, 0, S, S)
+  // 8 根短光芒
+  ctx.strokeStyle = 'rgba(255, 179, 71, 0.9)'
+  ctx.lineWidth = 6
+  ctx.lineCap = 'round'
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2
+    ctx.beginPath()
+    ctx.moveTo(C + Math.cos(a) * S * 0.30, C + Math.sin(a) * S * 0.30)
+    ctx.lineTo(C + Math.cos(a) * S * 0.37, C + Math.sin(a) * S * 0.37)
+    ctx.stroke()
+  }
+  // 细环
+  ctx.strokeStyle = 'rgba(255, 196, 122, 0.95)'
+  ctx.lineWidth = 4
+  ctx.beginPath()
+  ctx.arc(C, C, S * 0.22, 0, Math.PI * 2)
+  ctx.stroke()
+  // 球核（亮白到暖金的径向渐变）
+  const core = ctx.createRadialGradient(C, C, 0, C, C, S * 0.15)
+  core.addColorStop(0, 'rgba(255, 250, 235, 1)')
+  core.addColorStop(0.7, 'rgba(255, 214, 150, 1)')
+  core.addColorStop(1, 'rgba(255, 184, 92, 0.95)')
+  ctx.fillStyle = core
+  ctx.beginPath()
+  ctx.arc(C, C, S * 0.15, 0, Math.PI * 2)
+  ctx.fill()
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
+}
+
+/** 点光源灯泡纹理：发光球核 + 光晕烘焙进一张纹理（单一 Sprite） */
+function makeBulbTexture(): THREE.CanvasTexture {
+  const S = 128
+  const C = S / 2
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = S
+  const ctx = canvas.getContext('2d')!
+  const halo = ctx.createRadialGradient(C, C, 0, C, C, C)
+  halo.addColorStop(0, 'rgba(255, 224, 170, 0.85)')
+  halo.addColorStop(0.3, 'rgba(255, 190, 110, 0.4)')
+  halo.addColorStop(0.65, 'rgba(255, 150, 60, 0.12)')
+  halo.addColorStop(1, 'rgba(255, 140, 50, 0)')
+  ctx.fillStyle = halo
+  ctx.fillRect(0, 0, S, S)
+  const core = ctx.createRadialGradient(C, C, 0, C, C, S * 0.16)
+  core.addColorStop(0, 'rgba(255, 250, 235, 1)')
+  core.addColorStop(1, 'rgba(255, 192, 106, 1)')
+  ctx.fillStyle = core
+  ctx.beginPath()
+  ctx.arc(C, C, S * 0.16, 0, Math.PI * 2)
+  ctx.fill()
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
   return tex
@@ -183,7 +238,8 @@ export class GlitterScene {
   private eyeHandle = new THREE.Group()
   private eyeLabel!: THREE.Sprite // 挂在 scene 下而非 eyeHandle 下：eyeHandle 会 lookAt 旋转，标签需保持世界方位
   private eyeCone!: THREE.Mesh
-  private glowTex: THREE.CanvasTexture
+  private sunTex: THREE.CanvasTexture
+  private bulbTex: THREE.CanvasTexture
   private sightLine: THREE.Line
   private parallelLines: THREE.LineSegments
   private pointLine: THREE.Line
@@ -306,7 +362,8 @@ export class GlitterScene {
     this.scene.add(this.tripod)
 
     /* ---------------- 把手 ---------------- */
-    this.glowTex = makeGlowTexture()
+    this.sunTex = makeSunTexture()
+    this.bulbTex = makeBulbTexture()
     this.buildPointLightHandle()
     this.buildSunHandle()
     this.buildEyeHandle()
@@ -335,6 +392,18 @@ export class GlitterScene {
     this.scene.add(this.tc.getHelper())
     this.tc.addEventListener('dragging-changed', (e) => {
       this.orbit.enabled = !e.value
+      // 太阳拖动结束时，把手吸附回以板心为球心、SUN_R 为半径的球面
+      if (!e.value && this.tc.object === this.sunHandle) {
+        const c = this.surfaceGroup.position
+        const s = new THREE.Vector3().subVectors(this.sunHandle.position, c)
+        if (s.lengthSq() > 1e-6) {
+          s.normalize()
+          const el = Math.asin(clamp(s.z, Math.sin(5 * DEG), 1)) / DEG
+          let az = Math.atan2(s.y, s.x) / DEG
+          if (az < 0) az += 360
+          this.positionSun(az, el)
+        }
+      }
     })
     this.tc.addEventListener('objectChange', () => this.handleObjectChange())
     this.renderer.domElement.addEventListener('pointerdown', this.handlePick)
@@ -424,45 +493,24 @@ export class GlitterScene {
 
   /* ---------------- 把手构建 ---------------- */
   private buildPointLightHandle() {
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.13, 32, 20),
-      new THREE.MeshStandardMaterial({ color: 0x1c1005, emissive: 0xffc06a, emissiveIntensity: 2.4, roughness: 0.35, metalness: 0 }),
-    )
-    const glow = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: this.glowTex, color: 0xffbe6e, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }),
-    )
-    glow.scale.setScalar(0.85)
-    core.userData.dragId = 'pointLight'
+    // 单一 Sprite：球核 + 光晕烘焙在同一张纹理里，任何情况下都不可能分离
+    const bulb = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.bulbTex, transparent: true, depthWrite: false }))
+    bulb.scale.setScalar(0.8)
+    // 注意：子对象绝不能设 dragId —— 否则拾取会附着在子对象上，拖动时只有它被拖走（与把手其余部分分离）
     const label = makeTextSprite('点光源')
-    label.position.set(0, 0, 0.36)
-    this.pointLightHandle.add(core, glow, label)
+    label.position.set(0, 0, 0.42)
+    this.pointLightHandle.add(bulb, label)
     this.pointLightHandle.userData.dragId = 'pointLight'
   }
 
   private buildSunHandle() {
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.2, 32, 20),
-      new THREE.MeshStandardMaterial({ color: 0x1a0e04, emissive: 0xffb85c, emissiveIntensity: 2.6, roughness: 0.3, metalness: 0 }),
-    )
-    core.userData.dragId = 'sun'
-    // 细环
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.012, 12, 64), new THREE.MeshBasicMaterial({ color: 0xffc47a }))
-    // 短光芒
-    const rayMat = new THREE.MeshBasicMaterial({ color: 0xffb347 })
-    for (let i = 0; i < 8; i++) {
-      const ray = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.13, 6), rayMat)
-      const a = (i / 8) * Math.PI * 2
-      ray.position.set(Math.cos(a) * 0.44, Math.sin(a) * 0.44, 0)
-      ray.rotation.z = a + Math.PI / 2
-      this.sunHandle.add(ray)
-    }
-    const glow = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: this.glowTex, color: 0xffb060, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }),
-    )
-    glow.scale.setScalar(1.4)
+    // 单一 Sprite：球核 + 光环 + 细环 + 光芒烘焙在同一张纹理里，任何情况下都不可能分离
+    const sun = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.sunTex, transparent: true, depthWrite: false }))
+    sun.scale.setScalar(1.25)
+    // 注意：子对象绝不能设 dragId —— 否则拾取会附着在子对象上，拖动时只有它被拖走（与把手其余部分分离）
     const label = makeTextSprite('太阳 · 平行光')
-    label.position.set(0, 0, 0.68)
-    this.sunHandle.add(core, ring, glow, label)
+    label.position.set(0, 0, 0.66)
+    this.sunHandle.add(sun, label)
     this.sunHandle.userData.dragId = 'sun'
   }
 
@@ -507,20 +555,22 @@ export class GlitterScene {
     const hits = this.raycaster.intersectObjects(targets, true)
     let obj: THREE.Object3D | null = null
     for (const h of hits) {
+      // 沿父链向上解析到【最外层】带 dragId 的把手组：
+      // 若误附着在子对象上，拖动时只有该子对象被拖走，会出现把手部件相互分离。
+      // 同时若链路上任一对象不可见（如当前模式下隐藏的另一光源/反射面），跳过该命中。
       let o: THREE.Object3D | null = h.object
-      while (o && !o.userData.dragId) o = o.parent
-      if (o) {
-        const id = o.userData.dragId as string
-        const visible =
-          (id === 'pointLight' && this.pointLightHandle.visible) ||
-          (id === 'sun' && this.sunHandle.visible) ||
-          id === 'eye' ||
-          (id === 'surface' && o.visible) // o 为 plateGroup / diskGroup，仅拾取当前可见反射面
-        if (visible) {
-          // 反射面拖动作用于 surfaceGroup（uniform 中心取自 group 位置）
-          obj = id === 'surface' ? this.surfaceGroup : o
-          break
-        }
+      let resolved: THREE.Object3D | null = null
+      let anyInvisible = false
+      while (o) {
+        if (!o.visible) anyInvisible = true
+        if (o.userData.dragId) resolved = o
+        o = o.parent
+      }
+      if (resolved && !anyInvisible) {
+        const id = resolved.userData.dragId as string
+        // 反射面拖动作用于 surfaceGroup（uniform 中心取自 group 位置）
+        obj = id === 'surface' ? this.surfaceGroup : resolved
+        break
       }
     }
     if (obj) this.tc.attach(obj)
@@ -550,7 +600,8 @@ export class GlitterScene {
       p.y = clamp(p.y, -6, 6)
       this.onDragUpdate({ centerX: round(p.x), centerY: round(p.y) })
     } else if (id === 'sun') {
-      // 投影到以板心为球心、SUN_R 为半径的球面，回算方位角/仰角
+      // 拖动中不回拉把手：gizmo 与太阳始终重合，方位角/仰角实时取自当前位置；
+      // 松手时才在 dragging-changed 中吸附回球面（此前拖动中吸附会导致 gizmo 与太阳视觉分离）
       const c = this.surfaceGroup.position
       const s = new THREE.Vector3().subVectors(p, c)
       if (s.lengthSq() < 1e-6) return
@@ -558,7 +609,6 @@ export class GlitterScene {
       const el = Math.asin(clamp(s.z, Math.sin(5 * DEG), 1)) / DEG
       let az = Math.atan2(s.y, s.x) / DEG
       if (az < 0) az += 360
-      this.positionSun(az, el)
       this.onDragUpdate({ azimuth: round(az), elevation: round(el) })
     }
   }
@@ -794,7 +844,8 @@ export class GlitterScene {
     })
     this.plateBaseMat.map?.dispose()
     this.diskBaseMat.map?.dispose()
-    this.glowTex.dispose()
+    this.sunTex.dispose()
+    this.bulbTex.dispose()
     this.envTex.dispose()
     this.renderer.dispose()
     this.renderer.domElement.remove()

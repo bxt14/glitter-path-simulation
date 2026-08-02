@@ -41,7 +41,7 @@ export default function App() {
         {/* 观察者视角小窗：透明视口区，由同一 WebGLRenderer 第二遍 setViewport/setScissor 渲染 */}
         <div className="absolute bottom-4 right-4 z-10 overflow-hidden rounded-xl border border-[#2a3242] shadow-2xl">
           <div className="border-b border-[#232a38] bg-[#11151d]/90 px-3 py-1.5 text-[11px] font-medium tracking-wide text-[#9aa5b4]">
-            观察者视角
+            观察者视角 · {Math.round(params.focalLength)}mm
           </div>
           <div ref={insetRef} style={{ width: 320, height: 208 }} className="bg-transparent" />
         </div>

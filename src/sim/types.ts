@@ -23,6 +23,8 @@ export interface SimParams {
   diskRadius: number
   /** 观察者位置（z 为竖直高度，z ≥ 0.15） */
   eyePos: Vec3
+  /** 观察者视角等效焦段（全画幅 mm，16-135；垂直视场角 fov = 2·atan(12/f)） */
+  focalLength: number
   /** 反射面中心（XY 平面，z 恒为 0） */
   centerX: number
   centerY: number
@@ -39,6 +41,7 @@ export const DEFAULT_PARAMS: SimParams = {
   grooveAngle: 0,
   diskRadius: 2,
   eyePos: { x: 2.5, y: 3.5, z: 2.0 },
+  focalLength: 50,
   centerX: 0,
   centerY: 0,
 }
@@ -56,11 +59,13 @@ export const PRESETS: Preset[] = [
     params: {
       ...DEFAULT_PARAMS,
       lightMode: 'parallel',
-      azimuth: 120,
-      elevation: 82,
+      // 高仰角正午阳光；太阳在 +y 远侧（方位角 90°），眼睛在 −y 近侧，人隔着板面向太阳
+      azimuth: 90,
+      elevation: 70,
       surfaceType: 'plate',
       grooveAngle: 0,
-      eyePos: { x: 2.2, y: 3.2, z: 2.4 },
+      eyePos: { x: 0.6, y: -3.0, z: 2.2 },
+      focalLength: 50,
     },
   },
   {
@@ -69,11 +74,13 @@ export const PRESETS: Preset[] = [
     params: {
       ...DEFAULT_PARAMS,
       lightMode: 'parallel',
-      azimuth: 40,
-      elevation: 14,
+      // 低仰角夕阳；同样光从 +y 一侧照向 −y 一侧的眼睛，呈 V 形双曲线亮线
+      azimuth: 90,
+      elevation: 12,
       surfaceType: 'plate',
       grooveAngle: 90,
-      eyePos: { x: 0.4, y: 3.8, z: 1.8 },
+      eyePos: { x: 0.3, y: -3.8, z: 1.7 },
+      focalLength: 35,
     },
   },
   {
@@ -84,7 +91,8 @@ export const PRESETS: Preset[] = [
       lightMode: 'point',
       pointLightPos: { x: 0.0, y: 0.0, z: 5.0 },
       surfaceType: 'disk',
-      eyePos: { x: 2.0, y: 3.0, z: 2.0 },
+      eyePos: { x: 2.0, y: -3.0, z: 2.0 },
+      focalLength: 50,
     },
   },
   {
@@ -93,9 +101,11 @@ export const PRESETS: Preset[] = [
     params: {
       ...DEFAULT_PARAMS,
       lightMode: 'point',
-      pointLightPos: { x: 4.0, y: 1.5, z: 0.7 },
+      // 低角度点光源在盘 +y 一侧，眼睛在 −y 对侧，人隔着盘面向灯
+      pointLightPos: { x: 0.0, y: 4.5, z: 0.8 },
       surfaceType: 'disk',
-      eyePos: { x: 2.5, y: 3.0, z: 1.6 },
+      eyePos: { x: 0.0, y: -4.0, z: 1.8 },
+      focalLength: 50,
     },
   },
 ]

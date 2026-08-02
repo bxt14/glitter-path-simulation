@@ -121,6 +121,24 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
           <SliderRow label="眼睛 X" value={p.eyePos.x} min={-8} max={8} step={0.1} onChange={(v) => onChange({ eyePos: { ...p.eyePos, x: v } })} />
           <SliderRow label="眼睛 Y" value={p.eyePos.y} min={-8} max={8} step={0.1} onChange={(v) => onChange({ eyePos: { ...p.eyePos, y: v } })} />
           <SliderRow label="眼睛 Z（高度）" value={p.eyePos.z} min={0.15} max={8} step={0.05} onChange={(v) => onChange({ eyePos: { ...p.eyePos, z: v } })} />
+          <SliderRow label="等效焦段" value={p.focalLength} min={16} max={135} step={1} unit="mm" onChange={(v) => onChange({ focalLength: v })} />
+          <div className="flex gap-1.5">
+            {[24, 35, 50, 85].map((f) => (
+              <Button
+                key={f}
+                variant="outline"
+                size="sm"
+                className={`h-6 flex-1 px-1 text-[10px] ${
+                  Math.round(p.focalLength) === f
+                    ? 'border-[#d4a054]/70 bg-[#d4a054]/15 text-[#f0d9b0]'
+                    : 'border-[#2a3242] bg-[#141925] text-[#9aa5b4] hover:border-[#d4a054]/50 hover:text-[#f0d9b0]'
+                }`}
+                onClick={() => onChange({ focalLength: f })}
+              >
+                {f}mm
+              </Button>
+            ))}
+          </div>
         </div>
       </section>
 

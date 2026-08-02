@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import type { SimParams } from './types'
 import { clamp } from './types'
 
@@ -15,11 +16,15 @@ export interface DragUpdate {
 
 const SUN_R = 6 // 太阳把手轨道半径
 const MIN_Z = 0.15 // 点光源/眼睛最低高度（竖直方向为 z）
-const GIZMO_SIZE = 100 // 导航坐标轴指示器尺寸（CSS 像素）
-const GIZMO_MARGIN = 14
+const SURFACE_THICK = 0.06 // 反射面金属基底厚度
+const GLITTER_Z = SURFACE_THICK / 2 + 0.002 // glitter 发光层 z 微偏移，防 z-fighting
+const TRIPOD_LEN = 0.7 // 场景内坐标轴 tripod 轴长
+const TRIPOD_GAP = 0.8 // tripod 与反射面边界（-y 方向）的间距
 
 /* ------------------------------------------------------------------ */
-/* 着色器：逐 fragment 在世界坐标中计算 f(Q) = (p̂ − q̂)·t̂，|f|≈0 处发光 */
+/* 着色器：逐 fragment 在世界坐标中计算 f(Q) = (p̂ − q̂)·t̂，|f|≈0 处发光。 */
+/* 该层为透明 additive 的纯发光层，叠加在 PBR 金属基底之上；           */
+/* 暖金亮线颜色、sparkle 闪烁、线宽抗锯齿与原版逐像素一致。           */
 /* ------------------------------------------------------------------ */
 const VERT = /* glsl */ `
 varying vec3 vWorldPos;
@@ -54,17 +59,14 @@ void main() {
   vec3 p = (uLightMode == 1) ? normalize(Q - uPointPos) : uParallelDir;
   vec3 q = normalize(uEye - Q);
 
-  // t̂: 沟槽方向（XY 平面内，z 轴竖直）；grooveCoord = 垂直沟槽方向坐标，用于程序化拉丝纹理
+  // t̂: 沟槽方向（XY 平面内，z 轴竖直）
   vec3 t;
-  float grooveCoord;
   if (uSurfaceType == 0) {
     t = vec3(cos(uGrooveAngle), sin(uGrooveAngle), 0.0);
-    grooveCoord = rel.x * (-t.y) + rel.y * t.x;
   } else {
     float r = length(rel.xy);
     // t̂ = normalize(ẑ × (Q−C)) = normalize(−ry, rx, 0)；Q=C 处退化为 0 → 圆心天然发亮
     t = (r < 1e-4) ? vec3(0.0) : vec3(-rel.y, rel.x, 0.0) / r;
-    grooveCoord = r;
   }
 
   // 核心发亮条件 f(Q) = (p̂ − q̂)·t̂ = 0
@@ -73,29 +75,54 @@ void main() {
   float aa = max(fwidth(f), 1e-7) * 2.0;
   float glow = 1.0 - smoothstep(0.0, aa, abs(f));
 
-  // 程序化金属底纹：沿沟槽垂直方向的高频正弦条纹 + 细微噪点（纹理方向严格跟随沟槽几何）
-  float stripe = sin(grooveCoord * 90.0);
-  float fine = sin(grooveCoord * 340.0 + hash(floor(Q.xy * 60.0)) * 6.2831);
-  float baseGray = 0.125 + 0.030 * stripe + 0.012 * fine + 0.018 * (hash(floor(Q.xy * 200.0)) - 0.5);
-
-  // 简化 Blinn-Phong（N = ẑ），低调暗灰金属，亮线是视觉主角
-  vec3 N = vec3(0.0, 0.0, 1.0);
-  vec3 Ld = (uLightMode == 1) ? normalize(uPointPos - Q) : -uParallelDir;
-  vec3 H = normalize(Ld + q);
-  float diff = max(dot(N, Ld), 0.0);
-  float spec = pow(max(dot(N, H), 0.0), 60.0) * 0.16;
-  vec3 baseColor = vec3(baseGray) * (0.5 + 0.5 * diff) + vec3(spec);
-
-  // 暖金亮线，加法叠加 + 高频 sparkle 闪烁
+  // 暖金亮线 + 高频 sparkle 闪烁（additive 叠加，公式与原版逐像素一致）
   float sp = hash(floor(Q.xy * 140.0) + vec2(floor(uTime * 6.0)));
   float sparkle = 0.75 + 0.25 * sp;
   vec3 glowColor = vec3(1.0, 0.72, 0.35) * 2.5 * glow * sparkle;
 
-  gl_FragColor = vec4(baseColor + glowColor, 1.0);
+  gl_FragColor = vec4(glowColor, 1.0);
 }
 `
 
 const DEG = Math.PI / 180
+
+/** 全画幅等效焦段 f (mm) → 垂直视场角（度）：fov = 2·atan(12/f) */
+const focalToFov = (f: number) => 2 * Math.atan(12 / f) / DEG
+
+/** 径向渐变 glow 纹理（additive 光晕 sprite 用） */
+function makeGlowTexture(): THREE.CanvasTexture {
+  const S = 128
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = S
+  const ctx = canvas.getContext('2d')!
+  const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2)
+  g.addColorStop(0, 'rgba(255, 224, 170, 0.95)')
+  g.addColorStop(0.25, 'rgba(255, 190, 110, 0.5)')
+  g.addColorStop(0.6, 'rgba(255, 150, 60, 0.14)')
+  g.addColorStop(1, 'rgba(255, 140, 50, 0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, S, S)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
+}
+
+/** 字母标签 Sprite（canvas 纹理） */
+function makeLabelSprite(label: string, color: number, scale: number): THREE.Sprite {
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = 64
+  const ctx = canvas.getContext('2d')!
+  ctx.font = 'bold 44px system-ui, sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`
+  ctx.fillText(label, 32, 34)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }))
+  sprite.scale.setScalar(scale)
+  return sprite
+}
 
 export class GlitterScene {
   private container: HTMLElement
@@ -106,28 +133,36 @@ export class GlitterScene {
   private scene = new THREE.Scene()
   private mainCam: THREE.PerspectiveCamera
   private eyeCam: THREE.PerspectiveCamera
-  private gizmoScene = new THREE.Scene()
-  private gizmoCam = new THREE.PerspectiveCamera(40, 1, 0.1, 10)
   private orbit: OrbitControls
   private tc: TransformControls
   private raycaster = new THREE.Raycaster()
   private pointer = new THREE.Vector2()
+  private envTex: THREE.Texture
 
   private params: SimParams
-  private surfaceGroup = new THREE.Group()
-  private plateMesh: THREE.Mesh
-  private diskMesh: THREE.Mesh
-  private surfaceMat: THREE.ShaderMaterial
+  private surfaceGroup = new THREE.Group() // 平移由拖动控制（= 反射面中心 C）
+  private plateGroup = new THREE.Group() // 绕中心 z 轴随沟槽角 θ 旋转
+  private diskGroup = new THREE.Group()
+  private plateBase!: THREE.Mesh // PBR 金属基底（薄盒体）
+  private plateGlitter!: THREE.Mesh // additive glitter 发光层
+  private diskBase!: THREE.Mesh
+  private diskGlitter!: THREE.Mesh
+  private plateBaseMat: THREE.MeshPhysicalMaterial
+  private diskBaseMat: THREE.MeshPhysicalMaterial
+  private glitterMat: THREE.ShaderMaterial
   private geoKey = ''
+
+  private tripod = new THREE.Group() // 世界坐标轴指示（场景内物体，固定世界朝向）
 
   private pointLightHandle = new THREE.Group()
   private sunHandle = new THREE.Group()
   private eyeHandle = new THREE.Group()
   private eyeCone!: THREE.Mesh
+  private glowTex: THREE.CanvasTexture
   private sightLine: THREE.Line
   private parallelLines: THREE.LineSegments
   private pointLine: THREE.Line
-  private pointLightObj = new THREE.PointLight(0xffc47a, 40, 0, 1.8)
+  private pointLightObj = new THREE.PointLight(0xffc47a, 20, 0, 1.8)
 
   private raf = 0
   private clock = new THREE.Clock()
@@ -142,6 +177,8 @@ export class GlitterScene {
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
+    this.renderer.toneMappingExposure = 1.0
     this.renderer.domElement.style.position = 'absolute'
     this.renderer.domElement.style.inset = '0'
     this.renderer.domElement.style.width = '100%'
@@ -152,12 +189,19 @@ export class GlitterScene {
     this.scene.background = new THREE.Color(0x0b0e13)
     this.scene.fog = new THREE.Fog(0x0b0e13, 18, 42)
 
+    // 环境反射：RoomEnvironment 经 PMREM 作为 IBL，适度强度保留深色氛围
+    const pmrem = new THREE.PMREMGenerator(this.renderer)
+    this.envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+    pmrem.dispose()
+    this.scene.environment = this.envTex
+    this.scene.environmentIntensity = 0.5
+
     this.mainCam = new THREE.PerspectiveCamera(50, 1, 0.1, 200)
     this.mainCam.up.set(0, 0, 1) // z 轴竖直
     this.mainCam.position.set(6.2, 7.2, 4.6)
     this.mainCam.layers.enable(1) // 主相机可见 layer 0 + 1（眼睛把手在 layer 1）
 
-    this.eyeCam = new THREE.PerspectiveCamera(55, 320 / 208, 0.05, 200)
+    this.eyeCam = new THREE.PerspectiveCamera(focalToFov(params.focalLength), 320 / 208, 0.05, 200)
     this.eyeCam.up.set(0, 0, 1)
 
     this.orbit = new OrbitControls(this.mainCam, this.renderer.domElement)
@@ -168,17 +212,17 @@ export class GlitterScene {
     this.orbit.maxDistance = 30
 
     // 暗色低存在感网格地面（GridHelper 默认在 XZ 平面，旋转到 XY 平面）
-    const grid = new THREE.GridHelper(40, 40, 0x273043, 0x171e2c)
+    const grid = new THREE.GridHelper(40, 40, 0x232c3e, 0x151b29)
     grid.rotation.x = Math.PI / 2
     grid.position.z = -0.01
     const gm = grid.material as THREE.Material
     gm.transparent = true
-    gm.opacity = 0.55
+    gm.opacity = 0.45
     this.scene.add(grid)
-    this.scene.add(new THREE.AmbientLight(0x8899bb, 0.5))
+    this.scene.add(new THREE.AmbientLight(0x8899bb, 0.3))
 
-    /* ---------------- 反射面（共享 shader 的板/盘） ---------------- */
-    this.surfaceMat = new THREE.ShaderMaterial({
+    /* ---------------- 反射面：PBR 金属基底 + additive glitter 发光层 ---------------- */
+    this.glitterMat = new THREE.ShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,
       uniforms: {
@@ -192,24 +236,56 @@ export class GlitterScene {
         uTime: { value: 0 },
       },
       side: THREE.DoubleSide,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
     })
-    // PlaneGeometry/CircleGeometry 默认即在 XY 平面、法线 +z，无需旋转
-    this.plateMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.surfaceMat)
-    this.plateMesh.userData.dragId = 'surface'
-    this.diskMesh = new THREE.Mesh(new THREE.CircleGeometry(1, 160), this.surfaceMat)
-    this.diskMesh.userData.dragId = 'surface'
+
+    const maxAniso = this.renderer.capabilities.getMaxAnisotropy()
+    this.plateBaseMat = new THREE.MeshPhysicalMaterial({
+      map: this.makePlateBrushTexture(maxAniso),
+      color: 0xffffff,
+      metalness: 0.9,
+      roughness: 0.38,
+      anisotropy: 0.5,
+      envMapIntensity: 1.0,
+    })
+    this.diskBaseMat = new THREE.MeshPhysicalMaterial({
+      map: this.makeDiskBrushTexture(maxAniso),
+      color: 0xffffff,
+      metalness: 0.9,
+      roughness: 0.42,
+      envMapIntensity: 1.0,
+    })
+
+    // 板：薄盒体基底（带边缘厚度感）+ 顶面 glitter 层（z 微偏移）
+    this.plateBase = new THREE.Mesh(new THREE.BoxGeometry(1, 1, SURFACE_THICK), this.plateBaseMat)
+    this.plateGlitter = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.glitterMat)
+    this.plateGlitter.position.z = GLITTER_Z
+    this.plateGroup.add(this.plateBase, this.plateGlitter)
+    this.plateGroup.userData.dragId = 'surface'
+
+    // 盘：薄圆柱基底 + 顶面 glitter 层
+    this.diskBase = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, SURFACE_THICK, 128).rotateX(Math.PI / 2), this.diskBaseMat)
+    this.diskGlitter = new THREE.Mesh(new THREE.CircleGeometry(1, 160), this.glitterMat)
+    this.diskGlitter.position.z = GLITTER_Z
+    this.diskGroup.add(this.diskBase, this.diskGlitter)
+    this.diskGroup.userData.dragId = 'surface'
+
     this.surfaceGroup.userData.dragId = 'surface'
-    this.surfaceGroup.add(this.plateMesh, this.diskMesh)
+    this.surfaceGroup.add(this.plateGroup, this.diskGroup)
     this.scene.add(this.surfaceGroup)
 
+    /* ---------------- 场景内世界坐标轴 tripod ---------------- */
+    this.buildTripod()
+    this.scene.add(this.tripod)
+
     /* ---------------- 把手 ---------------- */
+    this.glowTex = makeGlowTexture()
     this.buildPointLightHandle()
     this.buildSunHandle()
     this.buildEyeHandle()
     this.scene.add(this.pointLightHandle, this.sunHandle, this.eyeHandle, this.pointLightObj)
-
-    /* ---------------- 导航坐标轴指示器（独立小场景，第三遍渲染） ---------------- */
-    this.buildGizmo()
 
     /* ---------------- 光线指示线 ---------------- */
     const mkLine = (color: number, opacity: number) =>
@@ -245,85 +321,145 @@ export class GlitterScene {
     this.loop()
   }
 
+  /* ---------------- 程序化拉丝纹理（PBR 基底贴图） ---------------- */
+  /** 拉丝板：沿沟槽方向（局部 x）的长条纹理，垂直沟槽方向疏密变化 */
+  private makePlateBrushTexture(anisotropy: number): THREE.CanvasTexture {
+    const S = 512
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = S
+    const ctx = canvas.getContext('2d')!
+    ctx.fillStyle = '#8f9298'
+    ctx.fillRect(0, 0, S, S)
+    for (let i = 0; i < 1000; i++) {
+      const y = Math.random() * S
+      const l = 118 + Math.random() * 76
+      ctx.strokeStyle = `rgba(${l | 0}, ${(l + 2) | 0}, ${(l + 7) | 0}, ${0.1 + Math.random() * 0.24})`
+      ctx.lineWidth = Math.random() < 0.85 ? 1 : 2
+      const x0 = Math.random() * S * 0.4 - S * 0.2
+      ctx.beginPath()
+      ctx.moveTo(x0, y)
+      ctx.lineTo(x0 + S * (0.6 + Math.random() * 0.8), y + (Math.random() - 0.5) * 1.6)
+      ctx.stroke()
+    }
+    const tex = new THREE.CanvasTexture(canvas)
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+    tex.colorSpace = THREE.SRGBColorSpace
+    tex.anisotropy = anisotropy
+    return tex
+  }
+
+  /** 同心圆盘：环形拉丝纹理 */
+  private makeDiskBrushTexture(anisotropy: number): THREE.CanvasTexture {
+    const S = 512
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = S
+    const ctx = canvas.getContext('2d')!
+    ctx.fillStyle = '#8b8e94'
+    ctx.fillRect(0, 0, S, S)
+    for (let r = 1.5; r < S * 0.72; r += 0.8 + Math.random() * 2.2) {
+      const l = 112 + Math.random() * 80
+      ctx.strokeStyle = `rgba(${l | 0}, ${(l + 2) | 0}, ${(l + 7) | 0}, ${0.1 + Math.random() * 0.26})`
+      ctx.lineWidth = Math.random() < 0.8 ? 1 : 2
+      ctx.beginPath()
+      ctx.arc(S / 2, S / 2, r, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+    const tex = new THREE.CanvasTexture(canvas)
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+    tex.colorSpace = THREE.SRGBColorSpace
+    tex.anisotropy = anisotropy
+    return tex
+  }
+
+  /* ---------------- 场景内世界坐标轴 tripod：XYZ 三轴 + 锥端 + 字母标签 ---------------- */
+  private buildTripod() {
+    const axes: Array<{ dir: THREE.Vector3; color: number; label: string }> = [
+      { dir: new THREE.Vector3(1, 0, 0), color: 0xc05a52, label: 'X' }, // 低饱和暖红
+      { dir: new THREE.Vector3(0, 1, 0), color: 0x6da26d, label: 'Y' }, // 低饱和绿
+      { dir: new THREE.Vector3(0, 0, 1), color: 0x5f83c4, label: 'Z' }, // 低饱和蓝
+    ]
+    const Y = new THREE.Vector3(0, 1, 0)
+    for (const { dir, color, label } of axes) {
+      const mat = new THREE.MeshBasicMaterial({ color })
+      const quat = new THREE.Quaternion().setFromUnitVectors(Y, dir)
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, TRIPOD_LEN, 10), mat)
+      shaft.quaternion.copy(quat)
+      shaft.position.copy(dir).multiplyScalar(TRIPOD_LEN / 2)
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.11, 12), mat)
+      tip.quaternion.copy(quat)
+      tip.position.copy(dir).multiplyScalar(TRIPOD_LEN + 0.055)
+      const sprite = makeLabelSprite(label, color, 0.2)
+      sprite.position.copy(dir).multiplyScalar(TRIPOD_LEN + 0.24)
+      this.tripod.add(shaft, tip, sprite)
+    }
+    // 原点小球
+    this.tripod.add(new THREE.Mesh(new THREE.SphereGeometry(0.032, 12, 8), new THREE.MeshBasicMaterial({ color: 0x8b93a3 })))
+    // tripod 在 layer 0：主视图与观察者视角小窗均可见；朝向固定为世界方向（不挂到反射面下）
+  }
+
   /* ---------------- 把手构建 ---------------- */
   private buildPointLightHandle() {
-    const core = new THREE.Mesh(new THREE.SphereGeometry(0.13, 24, 16), new THREE.MeshBasicMaterial({ color: 0xffd28a }))
-    const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(0.26, 24, 16),
-      new THREE.MeshBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false }),
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(0.13, 32, 20),
+      new THREE.MeshStandardMaterial({ color: 0x1c1005, emissive: 0xffc06a, emissiveIntensity: 2.4, roughness: 0.35, metalness: 0 }),
     )
+    const glow = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: this.glowTex, color: 0xffbe6e, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }),
+    )
+    glow.scale.setScalar(0.85)
     core.userData.dragId = 'pointLight'
     this.pointLightHandle.add(core, glow)
     this.pointLightHandle.userData.dragId = 'pointLight'
   }
 
   private buildSunHandle() {
-    const core = new THREE.Mesh(new THREE.SphereGeometry(0.2, 24, 16), new THREE.MeshBasicMaterial({ color: 0xffcf6e }))
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(0.2, 32, 20),
+      new THREE.MeshStandardMaterial({ color: 0x1a0e04, emissive: 0xffb85c, emissiveIntensity: 2.6, roughness: 0.3, metalness: 0 }),
+    )
     core.userData.dragId = 'sun'
-    this.sunHandle.add(core)
+    // 细环
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.012, 12, 64), new THREE.MeshBasicMaterial({ color: 0xffc47a }))
+    // 短光芒
     const rayMat = new THREE.MeshBasicMaterial({ color: 0xffb347 })
     for (let i = 0; i < 8; i++) {
-      const ray = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.16, 6), rayMat)
+      const ray = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.13, 6), rayMat)
       const a = (i / 8) * Math.PI * 2
-      ray.position.set(Math.cos(a) * 0.34, Math.sin(a) * 0.34, 0)
+      ray.position.set(Math.cos(a) * 0.44, Math.sin(a) * 0.44, 0)
       ray.rotation.z = a + Math.PI / 2
       this.sunHandle.add(ray)
     }
-    const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(0.34, 24, 16),
-      new THREE.MeshBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false }),
+    const glow = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: this.glowTex, color: 0xffb060, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }),
     )
-    this.sunHandle.add(glow)
+    glow.scale.setScalar(1.4)
+    this.sunHandle.add(core, ring, glow)
     this.sunHandle.userData.dragId = 'sun'
   }
 
   private buildEyeHandle() {
-    const body = new THREE.Mesh(new THREE.SphereGeometry(0.12, 24, 16), new THREE.MeshBasicMaterial({ color: 0xdfe7ef }))
-    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 12), new THREE.MeshBasicMaterial({ color: 0x1c2430 }))
-    pupil.position.set(0, 0, 0.09)
+    // 风格化眼球：眼白 + 虹膜 + 瞳孔 + 高光点，朝向由 lookAt 控制（+z 朝板心）
+    const sclera = new THREE.Mesh(
+      new THREE.SphereGeometry(0.12, 32, 24),
+      new THREE.MeshStandardMaterial({ color: 0xf4f7fa, roughness: 0.25, metalness: 0.05 }),
+    )
+    const iris = new THREE.Mesh(new THREE.CircleGeometry(0.052, 32), new THREE.MeshStandardMaterial({ color: 0x2e4a66, roughness: 0.3, metalness: 0.2 }))
+    iris.position.set(0, 0, 0.117)
+    const pupil = new THREE.Mesh(new THREE.CircleGeometry(0.024, 24), new THREE.MeshBasicMaterial({ color: 0x0a0d12 }))
+    pupil.position.set(0, 0, 0.118)
+    const highlight = new THREE.Mesh(new THREE.SphereGeometry(0.014, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }))
+    highlight.position.set(0.032, 0.03, 0.108)
     this.eyeCone = new THREE.Mesh(
       new THREE.ConeGeometry(0.05, 0.18, 16),
       new THREE.MeshBasicMaterial({ color: 0x8fa3bf, transparent: true, opacity: 0.85 }),
     )
     this.eyeCone.geometry.rotateX(Math.PI / 2) // 顶点指向 +z，配合 lookAt 指向板心
-    this.eyeCone.position.z = 0.2
-    this.eyeHandle.add(body, pupil, this.eyeCone)
+    this.eyeCone.position.z = 0.22
+    this.eyeHandle.add(sclera, iris, pupil, highlight, this.eyeCone)
     this.eyeHandle.up.set(0, 0, 1) // z 轴竖直，lookAt 时保持正确滚转角
     this.eyeHandle.userData.dragId = 'eye'
     // 眼睛把手整体放 layer 1：主相机可见，观察者相机不可见（避免自遮挡）
     this.eyeHandle.traverse((o) => o.layers.set(1))
-  }
-
-  /* ---------------- 导航坐标轴指示器：XYZ 三轴 + 字母标签 Sprite ---------------- */
-  private buildGizmo() {
-    const axes: Array<{ dir: THREE.Vector3; color: number; label: string }> = [
-      { dir: new THREE.Vector3(1, 0, 0), color: 0xc05a52, label: 'X' }, // 低饱和暖红
-      { dir: new THREE.Vector3(0, 1, 0), color: 0x6da26d, label: 'Y' }, // 低饱和绿
-      { dir: new THREE.Vector3(0, 0, 1), color: 0x5f83c4, label: 'Z' }, // 低饱和蓝
-    ]
-    const LEN = 0.85
-    for (const { dir, color, label } of axes) {
-      const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), dir.clone().multiplyScalar(LEN)])
-      this.gizmoScene.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color })))
-      // 轴端小球
-      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 8), new THREE.MeshBasicMaterial({ color }))
-      tip.position.copy(dir).multiplyScalar(LEN)
-      this.gizmoScene.add(tip)
-      // 字母标签：canvas 纹理 Sprite
-      const canvas = document.createElement('canvas')
-      canvas.width = canvas.height = 64
-      const ctx = canvas.getContext('2d')!
-      ctx.font = 'bold 44px system-ui, sans-serif'
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`
-      ctx.fillText(label, 32, 34)
-      const tex = new THREE.CanvasTexture(canvas)
-      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }))
-      sprite.position.copy(dir).multiplyScalar(LEN + 0.22)
-      sprite.scale.setScalar(0.34)
-      this.gizmoScene.add(sprite)
-    }
   }
 
   /* ---------------- 选中与拖动 ---------------- */
@@ -334,7 +470,7 @@ export class GlitterScene {
     this.pointer.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1)
     this.raycaster.setFromCamera(this.pointer, this.mainCam)
     this.raycaster.layers.enableAll()
-    const targets: THREE.Object3D[] = [this.pointLightHandle, this.sunHandle, this.eyeHandle, this.plateMesh, this.diskMesh]
+    const targets: THREE.Object3D[] = [this.pointLightHandle, this.sunHandle, this.eyeHandle, this.plateGroup, this.diskGroup]
     const hits = this.raycaster.intersectObjects(targets, true)
     let obj: THREE.Object3D | null = null
     for (const h of hits) {
@@ -346,7 +482,7 @@ export class GlitterScene {
           (id === 'pointLight' && this.pointLightHandle.visible) ||
           (id === 'sun' && this.sunHandle.visible) ||
           id === 'eye' ||
-          (id === 'surface' && (h.object as THREE.Mesh).visible)
+          (id === 'surface' && o.visible) // o 为 plateGroup / diskGroup，仅拾取当前可见反射面
         if (visible) {
           // 反射面拖动作用于 surfaceGroup（uniform 中心取自 group 位置）
           obj = id === 'surface' ? this.surfaceGroup : o
@@ -429,20 +565,32 @@ export class GlitterScene {
     this.pointLightObj.visible = p.lightMode === 'point'
     this.pointLightObj.position.copy(this.pointLightHandle.position)
 
-    this.plateMesh.visible = p.surfaceType === 'plate'
-    this.diskMesh.visible = p.surfaceType === 'disk'
+    this.plateGroup.visible = p.surfaceType === 'plate'
+    this.diskGroup.visible = p.surfaceType === 'disk'
 
-    // 几何尺寸重建（dispose 旧 geometry）；默认即在 XY 平面、法线 +z
+    // 沟槽角 θ：整块板（含轮廓与 glitter 层）绕自身中心 z 轴旋转，沟槽相对板固定（沿板局部 x）。
+    // shader 中 t̂ = (cosθ, sinθ, 0) 与此等价，公式无需变动。圆盘各向同性，不受影响。
+    this.plateGroup.rotation.z = p.grooveAngle * DEG
+
+    // 观察者视角等效焦段 → 垂直视场角
+    this.eyeCam.fov = focalToFov(p.focalLength)
+    this.eyeCam.updateProjectionMatrix()
+
+    // 几何尺寸重建（dispose 旧 geometry）；glitter 面默认即在 XY 平面、法线 +z
     const key = `${p.plateWidth}|${p.plateDepth}|${p.diskRadius}`
     if (key !== this.geoKey) {
       this.geoKey = key
-      this.plateMesh.geometry.dispose()
-      this.plateMesh.geometry = new THREE.PlaneGeometry(p.plateWidth, p.plateDepth)
-      this.diskMesh.geometry.dispose()
-      this.diskMesh.geometry = new THREE.CircleGeometry(p.diskRadius, 160)
+      this.plateBase.geometry.dispose()
+      this.plateBase.geometry = new THREE.BoxGeometry(p.plateWidth, p.plateDepth, SURFACE_THICK)
+      this.plateGlitter.geometry.dispose()
+      this.plateGlitter.geometry = new THREE.PlaneGeometry(p.plateWidth, p.plateDepth)
+      this.diskBase.geometry.dispose()
+      this.diskBase.geometry = new THREE.CylinderGeometry(p.diskRadius, p.diskRadius, SURFACE_THICK, 128).rotateX(Math.PI / 2)
+      this.diskGlitter.geometry.dispose()
+      this.diskGlitter.geometry = new THREE.CircleGeometry(p.diskRadius, 160)
     }
 
-    const u = this.surfaceMat.uniforms
+    const u = this.glitterMat.uniforms
     u.uLightMode.value = p.lightMode === 'point' ? 1 : 0
     u.uSurfaceType.value = p.surfaceType === 'plate' ? 0 : 1
     u.uGrooveAngle.value = p.grooveAngle * DEG
@@ -458,7 +606,7 @@ export class GlitterScene {
     const p = this.params
     const center = this.surfaceGroup.position
     const eyePos = this.eyeHandle.position
-    const u = this.surfaceMat.uniforms
+    const u = this.glitterMat.uniforms
 
     // 平行光方向由太阳把手实时位置定义：d̂ = normalize(C − handle)，保证拖动跟手
     const d = new THREE.Vector3().subVectors(center, this.sunHandle.position)
@@ -469,6 +617,10 @@ export class GlitterScene {
     u.uEye.value.copy(eyePos)
     u.uCenter.value.copy(center)
     u.uTime.value = t
+
+    // 坐标轴 tripod 跟随反射面平移（不随板旋转）：置于反射面边界外 -y 方向
+    const halfExtent = p.surfaceType === 'plate' ? Math.max(p.plateWidth, p.plateDepth) / 2 : p.diskRadius
+    this.tripod.position.set(center.x, center.y - halfExtent - TRIPOD_GAP, 0)
 
     // 眼睛看向板心 + 视锥指示线
     this.eyeHandle.lookAt(center)
@@ -504,12 +656,6 @@ export class GlitterScene {
     this.eyeCam.position.copy(eyePos)
     this.eyeCam.lookAt(center)
 
-    // 导航坐标轴指示器相机：朝向跟随主相机，固定距离看向原点
-    const gq = this.mainCam.quaternion
-    this.gizmoCam.position.set(0, 0, 2.6).applyQuaternion(gq)
-    this.gizmoCam.up.set(0, 0, 1).applyQuaternion(gq)
-    this.gizmoCam.lookAt(0, 0, 0)
-
     this.render()
   }
 
@@ -536,23 +682,6 @@ export class GlitterScene {
       this.renderer.setViewport(vx, vy, vw, vh)
       this.renderer.setScissor(vx, vy, vw, vh)
       this.renderer.render(this.scene, this.eyeCam)
-    }
-
-    // 导航坐标轴指示器：第三遍渲染，固定在画布右上角（CSS 像素，three 内部自行乘 pixelRatio）
-    const gw = GIZMO_SIZE
-    const gh = GIZMO_SIZE
-    if (crect.width > gw + GIZMO_MARGIN && crect.height > gh + GIZMO_MARGIN) {
-      const gx = Math.round(crect.width - gw - GIZMO_MARGIN)
-      const gy = Math.round(crect.height - gh - GIZMO_MARGIN) // GL 原点在左下 → 顶部
-      this.gizmoCam.aspect = gw / gh
-      this.gizmoCam.updateProjectionMatrix()
-      this.renderer.setViewport(gx, gy, gw, gh)
-      this.renderer.setScissor(gx, gy, gw, gh)
-      // 背景透明：不清除颜色（保留主画面），只清深度避免与上一帧串扰
-      this.renderer.autoClear = false
-      this.renderer.clearDepth()
-      this.renderer.render(this.gizmoScene, this.gizmoCam)
-      this.renderer.autoClear = true
     }
   }
 
@@ -629,6 +758,10 @@ export class GlitterScene {
       if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
       else if (mat) mat.dispose()
     })
+    this.plateBaseMat.map?.dispose()
+    this.diskBaseMat.map?.dispose()
+    this.glowTex.dispose()
+    this.envTex.dispose()
     this.renderer.dispose()
     this.renderer.domElement.remove()
   }

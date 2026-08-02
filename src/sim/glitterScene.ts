@@ -467,23 +467,22 @@ export class GlitterScene {
 
   private render() {
     const canvas = this.renderer.domElement
-    const W = canvas.width
-    const H = canvas.height
-    const pr = this.renderer.getPixelRatio()
+    // 注意：three.js 的 setViewport/setScissor 接受 CSS 像素，内部会自行乘以 pixelRatio，
+    // 这里不能再乘 devicePixelRatio，否则高 DPR 屏幕上小窗视口会被推出画布而不可见。
+    const crect = canvas.getBoundingClientRect()
 
     this.renderer.setScissorTest(true)
-    this.renderer.setViewport(0, 0, W, H)
-    this.renderer.setScissor(0, 0, W, H)
+    this.renderer.setViewport(0, 0, crect.width, crect.height)
+    this.renderer.setScissor(0, 0, crect.width, crect.height)
     this.renderer.render(this.scene, this.mainCam)
 
     // 观察者视角小窗：同一 renderer，setViewport/setScissor 第二遍渲染
     const rect = this.insetEl.getBoundingClientRect()
-    const crect = canvas.getBoundingClientRect()
-    const vw = Math.round(rect.width * pr)
-    const vh = Math.round(rect.height * pr)
+    const vw = Math.round(rect.width)
+    const vh = Math.round(rect.height)
     if (vw > 8 && vh > 8) {
-      const vx = Math.round((rect.left - crect.left) * pr)
-      const vy = Math.round((crect.bottom - rect.bottom) * pr) // GL 原点在左下
+      const vx = Math.round(rect.left - crect.left)
+      const vy = Math.round(crect.bottom - rect.bottom) // GL 原点在左下
       this.eyeCam.aspect = vw / vh
       this.eyeCam.updateProjectionMatrix()
       this.renderer.setViewport(vx, vy, vw, vh)

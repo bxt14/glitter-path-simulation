@@ -124,6 +124,30 @@ function makeLabelSprite(label: string, color: number, scale: number): THREE.Spr
   return sprite
 }
 
+/** 中文文字标签 Sprite：自动量宽、深色描边，悬浮于把手上方向用户说明物体身份 */
+function makeTextSprite(text: string, scale = 0.42): THREE.Sprite {
+  const font = 'bold 30px system-ui, "PingFang SC", "Microsoft YaHei", sans-serif'
+  const canvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d')!
+  ctx.font = font
+  const w = Math.ceil(ctx.measureText(text).width) + 24
+  canvas.width = w // 注意：设置 width 会重置 ctx 状态，下面需重设 font
+  canvas.height = 52
+  ctx.font = font
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.lineWidth = 5
+  ctx.strokeStyle = 'rgba(8, 10, 14, 0.85)'
+  ctx.strokeText(text, w / 2, 27)
+  ctx.fillStyle = '#d7dee8'
+  ctx.fillText(text, w / 2, 27)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0.95 }))
+  sprite.scale.set(scale * (w / 52), scale, 1)
+  return sprite
+}
+
 export class GlitterScene {
   private container: HTMLElement
   private insetEl: HTMLElement
@@ -157,6 +181,7 @@ export class GlitterScene {
   private pointLightHandle = new THREE.Group()
   private sunHandle = new THREE.Group()
   private eyeHandle = new THREE.Group()
+  private eyeLabel!: THREE.Sprite // 挂在 scene 下而非 eyeHandle 下：eyeHandle 会 lookAt 旋转，标签需保持世界方位
   private eyeCone!: THREE.Mesh
   private glowTex: THREE.CanvasTexture
   private sightLine: THREE.Line
@@ -408,7 +433,9 @@ export class GlitterScene {
     )
     glow.scale.setScalar(0.85)
     core.userData.dragId = 'pointLight'
-    this.pointLightHandle.add(core, glow)
+    const label = makeTextSprite('点光源')
+    label.position.set(0, 0, 0.36)
+    this.pointLightHandle.add(core, glow, label)
     this.pointLightHandle.userData.dragId = 'pointLight'
   }
 
@@ -433,7 +460,9 @@ export class GlitterScene {
       new THREE.SpriteMaterial({ map: this.glowTex, color: 0xffb060, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }),
     )
     glow.scale.setScalar(1.4)
-    this.sunHandle.add(core, ring, glow)
+    const label = makeTextSprite('太阳 · 平行光')
+    label.position.set(0, 0, 0.68)
+    this.sunHandle.add(core, ring, glow, label)
     this.sunHandle.userData.dragId = 'sun'
   }
 
@@ -460,6 +489,10 @@ export class GlitterScene {
     this.eyeHandle.userData.dragId = 'eye'
     // 眼睛把手整体放 layer 1：主相机可见，观察者相机不可见（避免自遮挡）
     this.eyeHandle.traverse((o) => o.layers.set(1))
+    // 「观察者」标签：layer 1，位置在 loop 中每帧同步到眼睛上方
+    this.eyeLabel = makeTextSprite('观察者')
+    this.eyeLabel.layers.set(1)
+    this.scene.add(this.eyeLabel)
   }
 
   /* ---------------- 选中与拖动 ---------------- */
@@ -624,6 +657,7 @@ export class GlitterScene {
 
     // 眼睛看向板心 + 视锥指示线
     this.eyeHandle.lookAt(center)
+    this.eyeLabel.position.set(eyePos.x, eyePos.y, eyePos.z + 0.36)
     const sightPos = this.sightLine.geometry.attributes.position as THREE.BufferAttribute
     sightPos.setXYZ(0, eyePos.x, eyePos.y, eyePos.z)
     sightPos.setXYZ(1, center.x, center.y, center.z)

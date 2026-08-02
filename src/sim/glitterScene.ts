@@ -217,6 +217,14 @@ export class GlitterScene {
   private raycaster = new THREE.Raycaster()
   private pointer = new THREE.Vector2()
   private envTex: THREE.Texture
+  private bgTex: THREE.CanvasTexture
+  private shadowTex: THREE.CanvasTexture
+  private contactShadow!: THREE.Mesh
+  // 渲染循环复用的临时向量（避免每帧分配，减轻 GC 压力）
+  private tmpD = new THREE.Vector3()
+  private tmpOff = new THREE.Vector3()
+  private tmpA = new THREE.Vector3()
+  private tmpB = new THREE.Vector3()
 
   private params: SimParams
   private surfaceGroup = new THREE.Group() // 平移由拖动控制（= 反射面中心 C）
@@ -256,7 +264,7 @@ export class GlitterScene {
     this.params = params
     this.onDragUpdate = onDragUpdate
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true })
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.0
@@ -267,7 +275,9 @@ export class GlitterScene {
     this.renderer.domElement.style.display = 'block'
     container.appendChild(this.renderer.domElement)
 
-    this.scene.background = new THREE.Color(0x0b0e13)
+    // 背景：垂直暗色渐变（上深灰蓝 → 下近黑），比纯色更有纵深
+    this.bgTex = this.makeBackgroundTexture()
+    this.scene.background = this.bgTex
     this.scene.fog = new THREE.Fog(0x0b0e13, 18, 42)
 
     // 环境反射：RoomEnvironment 经 PMREM 作为 IBL，适度强度保留深色氛围
@@ -300,7 +310,22 @@ export class GlitterScene {
     gm.transparent = true
     gm.opacity = 0.45
     this.scene.add(grid)
-    this.scene.add(new THREE.AmbientLight(0x8899bb, 0.3))
+    this.scene.add(new THREE.AmbientLight(0x8899bb, 0.22))
+    // 主光 + 冷色轮廓光：让把手/ tripod / 金属边缘有立体感（不影响 glitter 发光层）
+    const keyLight = new THREE.DirectionalLight(0xfff0dd, 0.45)
+    keyLight.position.set(4, -3, 6)
+    const rimLight = new THREE.DirectionalLight(0x6a86b8, 0.25)
+    rimLight.position.set(-5, 4, 2.5)
+    this.scene.add(keyLight, rimLight)
+
+    // 反射面接触阴影：软径向渐变"落地影"，跟随反射面中心，增强落地感
+    this.shadowTex = this.makeShadowTexture()
+    this.contactShadow = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({ map: this.shadowTex, transparent: true, depthWrite: false, opacity: 0.62 }),
+    )
+    this.contactShadow.position.z = -0.005
+    this.scene.add(this.contactShadow)
 
     /* ---------------- 反射面：PBR 金属基底 + additive glitter 发光层 ---------------- */
     this.glitterMat = new THREE.ShaderMaterial({
@@ -413,6 +438,38 @@ export class GlitterScene {
     this.resize()
     this.applyParams()
     this.loop()
+  }
+
+  /** 背景垂直渐变纹理（scene.background 用，2px 宽即可横向拉伸） */
+  private makeBackgroundTexture(): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas')
+    canvas.width = 2
+    canvas.height = 512
+    const ctx = canvas.getContext('2d')!
+    const g = ctx.createLinearGradient(0, 0, 0, 512)
+    g.addColorStop(0, '#141a26')
+    g.addColorStop(0.55, '#0c1017')
+    g.addColorStop(1, '#06080c')
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, 2, 512)
+    const tex = new THREE.CanvasTexture(canvas)
+    tex.colorSpace = THREE.SRGBColorSpace
+    return tex
+  }
+
+  /** 接触阴影纹理：中心浓、边缘全透明的径向渐变（模拟柔和落地影） */
+  private makeShadowTexture(): THREE.CanvasTexture {
+    const S = 256
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = S
+    const ctx = canvas.getContext('2d')!
+    const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2)
+    g.addColorStop(0, 'rgba(0, 0, 0, 0.85)')
+    g.addColorStop(0.55, 'rgba(0, 0, 0, 0.42)')
+    g.addColorStop(1, 'rgba(0, 0, 0, 0)')
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, S, S)
+    return new THREE.CanvasTexture(canvas)
   }
 
   /* ---------------- 程序化拉丝纹理（PBR 基底贴图） ---------------- */
@@ -692,7 +749,7 @@ export class GlitterScene {
     const u = this.glitterMat.uniforms
 
     // 平行光方向由太阳把手实时位置定义：d̂ = normalize(C − handle)，保证拖动跟手
-    const d = new THREE.Vector3().subVectors(center, this.sunHandle.position)
+    const d = this.tmpD.subVectors(center, this.sunHandle.position)
     if (d.lengthSq() > 1e-8) d.normalize()
     else d.set(0, 0, -1)
     u.uParallelDir.value.copy(d)
@@ -704,6 +761,14 @@ export class GlitterScene {
     // 坐标轴 tripod 跟随反射面平移（不随板旋转）：置于反射面边界外 -y 方向
     const halfExtent = p.surfaceType === 'plate' ? Math.max(p.plateWidth, p.plateDepth) / 2 : p.diskRadius
     this.tripod.position.set(center.x, center.y - halfExtent - TRIPOD_GAP, 0)
+
+    // 接触阴影跟随反射面（略大于轮廓，板用椭圆比例、盘用圆形）
+    if (p.surfaceType === 'plate') {
+      this.contactShadow.scale.set(p.plateWidth * 1.35, p.plateDepth * 1.35, 1)
+    } else {
+      this.contactShadow.scale.setScalar(p.diskRadius * 2.6)
+    }
+    this.contactShadow.position.set(center.x, center.y, -0.005)
 
     // 眼睛看向板心 + 视锥指示线
     this.eyeHandle.lookAt(center)
@@ -720,10 +785,9 @@ export class GlitterScene {
       let i = 0
       for (let k = -2; k <= 2; k++) {
         // 沟槽平面（XY）内垂直于光方向的水平偏移
-        const off = new THREE.Vector3(-d.y, d.x, 0).normalize().multiplyScalar(k * 0.9)
-        const base = new THREE.Vector3().copy(center).add(off)
-        const a = new THREE.Vector3().copy(base).addScaledVector(d, -5.5)
-        const b = new THREE.Vector3().copy(base).addScaledVector(d, 1.2)
+        const off = this.tmpOff.set(-d.y, d.x, 0).normalize().multiplyScalar(k * 0.9)
+        const a = this.tmpA.copy(center).add(off).addScaledVector(d, -5.5)
+        const b = this.tmpB.copy(center).add(off).addScaledVector(d, 1.2)
         attr.setXYZ(i++, a.x, a.y, a.z)
         attr.setXYZ(i++, b.x, b.y, b.z)
       }
@@ -838,14 +902,22 @@ export class GlitterScene {
     this.scene.traverse((o) => {
       const mesh = o as THREE.Mesh
       if (mesh.geometry) mesh.geometry.dispose()
+      const disposeMat = (m: THREE.Material) => {
+        // 材质 dispose 不会自动释放其纹理（标签 Sprite / 接触阴影等的 canvas 纹理），需手动释放
+        const mapped = m as THREE.Material & { map?: THREE.Texture | null }
+        mapped.map?.dispose()
+        m.dispose()
+      }
       const mat = mesh.material as THREE.Material | THREE.Material[] | undefined
-      if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
-      else if (mat) mat.dispose()
+      if (Array.isArray(mat)) mat.forEach(disposeMat)
+      else if (mat) disposeMat(mat)
     })
     this.plateBaseMat.map?.dispose()
     this.diskBaseMat.map?.dispose()
     this.sunTex.dispose()
     this.bulbTex.dispose()
+    this.bgTex.dispose()
+    this.shadowTex.dispose()
     this.envTex.dispose()
     this.renderer.dispose()
     this.renderer.domElement.remove()

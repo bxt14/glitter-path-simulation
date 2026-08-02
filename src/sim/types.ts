@@ -32,15 +32,17 @@ export interface SimParams {
 
 export const DEFAULT_PARAMS: SimParams = {
   lightMode: 'parallel',
-  azimuth: 60,
-  elevation: 55,
+  // 首屏构型经数值验证：阳光从板后 (+y) 低角度照来，人在对面 (−y)，
+  // 双曲线亮线完整扫过板面且弧度明显（旧默认参数下亮线落在板外，首屏看不到）
+  azimuth: 95,
+  elevation: 45,
   pointLightPos: { x: -2.5, y: 2.0, z: 4.5 },
   surfaceType: 'plate',
   plateWidth: 4,
   plateDepth: 3,
   grooveAngle: 0,
   diskRadius: 2,
-  eyePos: { x: 2.5, y: 3.5, z: 2.0 },
+  eyePos: { x: 0.2, y: -2.2, z: 1.7 },
   focalLength: 50,
   centerX: 0,
   centerY: 0,

@@ -5,9 +5,13 @@ import type { DragUpdate, GlitterScene } from '@/sim/glitterScene'
 import GlitterCanvas from '@/components/GlitterCanvas'
 import ControlPanel from '@/components/ControlPanel'
 import InfoPanel from '@/components/InfoPanel'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { SlidersHorizontal, X } from 'lucide-react'
 
 export default function App() {
   const [params, setParams] = useState<SimParams>(DEFAULT_PARAMS)
+  const [panelOpen, setPanelOpen] = useState(false)
+  const isMobile = useIsMobile()
   const insetRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<GlitterScene | null>(null)
 
@@ -26,30 +30,65 @@ export default function App() {
     requestAnimationFrame(() => sceneRef.current?.selfCheck())
   }, [])
 
+  // 观察者视角小窗尺寸：移动端缩小，避免遮挡场景
+  const insetW = isMobile ? 168 : 320
+  const insetH = isMobile ? 110 : 208
+
   return (
     <div className="flex h-[100dvh] overflow-hidden bg-[#0b0e13] text-[#c9d1d9]">
       <main className="relative min-w-0 flex-1">
         <GlitterCanvas params={params} insetRef={insetRef} onDragUpdate={onDragUpdate} sceneRef={sceneRef} />
 
-        <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-lg border border-[#232a38] bg-[#11151d]/85 px-3 py-2 backdrop-blur">
-          <h1 className="text-sm font-semibold tracking-wide text-[#e6ebf2]">Glitter Path · 沟槽反射亮线模拟</h1>
-          <p className="mt-0.5 text-[11px] text-[#66707e]">点击发光体 / 太阳 / 眼睛 / 金属面可选中并拖动 · 空白处拖动旋转视角</p>
+        <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-lg border border-[#232a38] bg-[#11151d]/85 px-3 py-2 backdrop-blur md:left-4 md:top-4">
+          <h1 className="text-[13px] font-semibold tracking-wide text-[#e6ebf2] md:text-sm">Glitter Path · 沟槽反射亮线模拟</h1>
+          <p className="mt-0.5 hidden text-[11px] text-[#66707e] md:block">点击发光体 / 太阳 / 眼睛 / 金属面可选中并拖动 · 空白处拖动旋转视角</p>
         </div>
 
         <InfoPanel params={params} />
 
+        {/* 移动端：参数面板唤起按钮（底部居中，避开左下教学面板与右下小窗） */}
+        <button
+          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[#2a3242] bg-[#11151d]/90 px-4 py-2 text-xs font-medium text-[#c9d1d9] shadow-lg backdrop-blur transition-colors hover:border-[#d4a054]/60 hover:text-[#f0d9b0] md:hidden"
+          onClick={() => setPanelOpen(true)}
+        >
+          <SlidersHorizontal className="size-3.5" /> 参数调节
+        </button>
+
         {/* 观察者视角小窗：透明视口区，由同一 WebGLRenderer 第二遍 setViewport/setScissor 渲染 */}
-        <div className="absolute bottom-4 right-4 z-10 overflow-hidden rounded-xl border border-[#2a3242] shadow-2xl">
-          <div className="border-b border-[#232a38] bg-[#11151d]/90 px-3 py-1.5 text-[11px] font-medium tracking-wide text-[#9aa5b4]">
+        <div className="absolute bottom-4 right-3 z-10 overflow-hidden rounded-xl border border-[#2a3242] shadow-2xl md:right-4">
+          <div className="border-b border-[#232a38] bg-[#11151d]/90 px-2.5 py-1 text-[10px] font-medium tracking-wide text-[#9aa5b4] md:px-3 md:py-1.5 md:text-[11px]">
             观察者视角 · {Math.round(params.focalLength)}mm
           </div>
-          <div ref={insetRef} style={{ width: 320, height: 208 }} className="bg-transparent" />
+          <div ref={insetRef} style={{ width: insetW, height: insetH }} className="bg-transparent" />
         </div>
       </main>
 
-      <aside className="w-[320px] shrink-0 border-l border-[#232a38] bg-[#11151d]">
+      {/* 桌面端：右侧固定参数面板 */}
+      <aside className="hidden w-[320px] shrink-0 border-l border-[#232a38] bg-[#11151d] md:block">
         <ControlPanel params={params} onChange={onChange} onPreset={onPreset} />
       </aside>
+
+      {/* 移动端：底部抽屉参数面板 + 背景遮罩 */}
+      {panelOpen && (
+        <>
+          <div className="fixed inset-0 z-20 bg-black/55 backdrop-blur-[2px] md:hidden" onClick={() => setPanelOpen(false)} />
+          <div className="fixed inset-x-0 bottom-0 z-30 flex h-[64dvh] flex-col rounded-t-2xl border-t border-[#2a3242] bg-[#11151d] shadow-2xl md:hidden">
+            <div className="flex items-center justify-between border-b border-[#232a38] px-4 py-2.5">
+              <span className="text-[13px] font-semibold text-[#e6ebf2]">参数调节</span>
+              <button
+                className="rounded-md p-1.5 text-[#9aa5b4] transition-colors hover:bg-[#1a2130] hover:text-[#e6ebf2]"
+                onClick={() => setPanelOpen(false)}
+                aria-label="关闭参数面板"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1">
+              <ControlPanel params={params} onChange={onChange} onPreset={onPreset} />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

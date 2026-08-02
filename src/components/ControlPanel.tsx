@@ -29,22 +29,31 @@ function SliderRow({
   unit?: string
   onChange: (v: number) => void
 }) {
+  // 显示精度跟随步进：step 1 → 整数；step 0.1 → 一位小数；step 0.05 → 两位小数
+  const decimals = step >= 1 ? 0 : (String(step).split('.')[1]?.length ?? 0)
   return (
-    <div className="space-y-1.5">
+    <div className="group space-y-1.5">
       <div className="flex items-center justify-between text-xs">
-        <span className="text-[#9aa5b4]">{label}</span>
+        <span className="text-[#9aa5b4] transition-colors group-hover:text-[#d6dde8]">{label}</span>
         <span className="font-mono text-[#d4a054]">
-          {Number.isInteger(step) ? Math.round(value) : value.toFixed(2)}
+          {value.toFixed(decimals)}
           {unit ?? ''}
         </span>
       </div>
-      <Slider min={min} max={max} step={step} value={[clamp(value, min, max)]} onValueChange={(v) => onChange(v[0])} />
+      <div className="slider-amber">
+        <Slider min={min} max={max} step={step} value={[clamp(value, min, max)]} onValueChange={(v) => onChange(v[0])} />
+      </div>
     </div>
   )
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <h3 className="text-[13px] font-semibold tracking-wide text-[#e6ebf2]">{children}</h3>
+  return (
+    <h3 className="flex items-center gap-2 text-[13px] font-semibold tracking-wide text-[#e6ebf2]">
+      <span className="inline-block h-3 w-[3px] rounded-full bg-[#d4a054]/80" />
+      {children}
+    </h3>
+  )
 }
 
 export default function ControlPanel({ params, onChange, onPreset }: Props) {

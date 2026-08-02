@@ -44,3 +44,17 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* 控制面板滑块：琥珀色强调（range 填充 + 拖环描边），悬停时拇指略微放大 */
+.slider-amber [data-slot="slider-range"] {
+  background: #d4a054;
+}
+.slider-amber [data-slot="slider-thumb"] {
+  border-color: #d4a054;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.slider-amber [data-slot="slider-thumb"]:hover,
+.slider-amber [data-slot="slider-thumb"]:focus-visible {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 4px rgb(212 160 84 / 0.18);
+}

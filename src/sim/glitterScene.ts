@@ -903,9 +903,10 @@ export class GlitterScene {
   }
 
   /**
-   * 光路可逆锥：发亮条件 q̂·t̂ = p̂·t̂ = c 对平行光是常数，
-   * 故从眼睛出发、与 t̂ 夹角为 α = arccos|c| 的所有方向构成一个圆锥，
-   * 它与板面 z=0 的交线正是反射亮线（轴平行于平面 → 双曲线的一支）。
+   * 光路可逆锥：发亮条件 q̂·t̂ = p̂·t̂ = c 对平行光是常数（q̂ 由板面点指向眼睛）。
+   * 从眼睛发出的射线方向 r̂ = −q̂，故锥面应满足 r̂·t̂ = −c：
+   * 轴取 a = −sign(c)·t̂、半角 α = arccos|c|，它与板面 z=0 的交线正是反射亮线
+   * （轴平行于平面 → 双曲线的一支）。
    */
   private updateEyeCone() {
     const p = this.params
@@ -927,7 +928,7 @@ export class GlitterScene {
       this.eyeConeGroup.visible = false // α≈0：锥退化为射线，与板面无交线
       return
     }
-    const sgn = c < 0 ? -1 : 1
+    const sgn = c < 0 ? 1 : -1 // 注意：眼睛发出的方向 r̂ = −q̂，轴须取 −sign(c)·t̂（指向亮线）
     const ax = thx * sgn
     const ay = thy * sgn
     const cosA = Math.abs(c)

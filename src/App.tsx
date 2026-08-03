@@ -27,7 +27,8 @@ export default function App() {
   }, [])
 
   const onPreset = useCallback((p: SimParams) => {
-    setParams(cloneParams(p))
+    // 预设只改场景构型；亮线分析的两个开关属于视图叠加层，保持用户当前状态不被预设吞掉
+    setParams((prev) => ({ ...cloneParams(p), showGlitterPoint: prev.showGlitterPoint, showEyeCone: prev.showEyeCone }))
     // 预设生效后运行一次物理自检（rAF 确保 scene 已拿到新参数）
     requestAnimationFrame(() => sceneRef.current?.selfCheck())
   }, [])

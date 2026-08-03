@@ -89,12 +89,14 @@ export const PRESETS: Preset[] = [
     params: {
       ...DEFAULT_PARAMS,
       lightMode: 'parallel',
-      // 低仰角夕阳；同样光从 +y 一侧照向 −y 一侧的眼睛，呈 V 形双曲线亮线
+      // 低仰角夕阳；光从 +y 一侧照向 −y 一侧的眼睛，呈 V 形双曲线亮线
+      //（参数经数值扫描校准：el=15°、眼睛 −5 时 V 形顶点恰好落在板面内；
+      //  旧参数 el=12°/眼睛 −3.8 时整条亮线 missed 板面，预设看不到线）
       azimuth: 90,
-      elevation: 12,
+      elevation: 15,
       surfaceType: 'plate',
       grooveAngle: 90,
-      eyePos: { x: 0.3, y: -3.8, z: 1.7 },
+      eyePos: { x: 0.3, y: -5.0, z: 1.7 },
       focalLength: 35,
     },
   },

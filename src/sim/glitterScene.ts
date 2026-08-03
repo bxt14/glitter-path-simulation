@@ -4,6 +4,7 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import type { SimParams } from './types'
 import { clamp } from './types'
+import { fAt, projectToGlitter, findInitialGlitterPoint } from './glitterMath'
 
 export interface DragUpdate {
   pointLightPos?: { x: number; y: number; z: number }
@@ -229,6 +230,11 @@ export class GlitterScene {
   private tmpOff = new THREE.Vector3()
   private tmpA = new THREE.Vector3()
   private tmpB = new THREE.Vector3()
+  // 亮线分析逐帧更新的复用向量（避免每帧堆分配）
+  private tmpGP = new THREE.Vector3()
+  private tmpGE = new THREE.Vector3()
+  private tmpGPh = new THREE.Vector3()
+  private tmpGS = new THREE.Vector3()
 
   private params: SimParams
   private surfaceGroup = new THREE.Group() // 平移由拖动控制（= 反射面中心 C）
@@ -262,7 +268,23 @@ export class GlitterScene {
   private pointHandle = new THREE.Group() // 拖动把手（dragId='glitterPoint'）
   private pointPos = new THREE.Vector3() // 点在面上的位置（z=0 平面坐标）
   private pointNeedsInit = true
-  private pointParamsKey = ''
+  // 亮点重投影的参数快照（数值逐字段比较，避免每帧拼字符串 key）
+  private pointSnap = new Float64Array(14)
+  private pointSnapFlags = ''
+  /** 影响 f(Q) 的参数是否变化（变化时更新快照并返回 true） */
+  private pointParamsChanged(p: SimParams): boolean {
+    const s = this.pointSnap
+    let changed = false
+    const check = (i: number, v: number) => { if (s[i] !== v) { s[i] = v; changed = true } }
+    check(0, p.azimuth); check(1, p.elevation)
+    check(2, p.pointLightPos.x); check(3, p.pointLightPos.y); check(4, p.pointLightPos.z)
+    check(5, p.plateWidth); check(6, p.plateDepth); check(7, p.grooveAngle); check(8, p.diskRadius)
+    check(9, p.centerX); check(10, p.centerY)
+    check(11, p.eyePos.x); check(12, p.eyePos.y); check(13, p.eyePos.z)
+    const flags = (p.lightMode === 'point' ? 1 : 0) + (p.surfaceType === 'disk' ? 2 : 0)
+    if (String(flags) !== this.pointSnapFlags) { this.pointSnapFlags = String(flags); changed = true }
+    return changed
+  }
   private incidentArrow!: THREE.Group
   private reflectedArrow!: THREE.Group
   private coneMesh!: THREE.Mesh
@@ -403,6 +425,7 @@ export class GlitterScene {
     this.diskBase = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, SURFACE_THICK, 128).rotateX(Math.PI / 2), this.diskBaseMat)
     this.diskGlitter = new THREE.Mesh(new THREE.CircleGeometry(1, 160), this.glitterMat)
     this.diskGlitter.position.z = GLITTER_Z
+    this.diskGlitter.renderOrder = 1
     this.diskGroup.add(this.diskBase, this.diskGlitter)
     this.diskGroup.userData.dragId = 'surface'
 
@@ -479,6 +502,7 @@ export class GlitterScene {
 
     this.resizeObs = new ResizeObserver(() => this.resize())
     this.resizeObs.observe(container)
+    this.resizeObs.observe(insetEl) // 小窗尺寸变化（移动端/桌面切换）也要刷新缓存 rect
     this.resize()
     this.applyParams()
     this.loop()
@@ -661,6 +685,9 @@ export class GlitterScene {
     return g
   }
 
+  private static ARROW_UP = new THREE.Vector3(0, 1, 0)
+  private arrowDir = new THREE.Vector3()
+
   private updateArrow(g: THREE.Group, start: THREE.Vector3, end: THREE.Vector3) {
     const line = g.userData.line as THREE.Line
     const attr = line.geometry.attributes.position as THREE.BufferAttribute
@@ -668,11 +695,11 @@ export class GlitterScene {
     attr.setXYZ(1, end.x, end.y, end.z)
     attr.needsUpdate = true
     const head = g.userData.head as THREE.Mesh
-    const dir = new THREE.Vector3().subVectors(end, start)
+    const dir = this.arrowDir.subVectors(end, start)
     if (dir.lengthSq() < 1e-8) return
     dir.normalize()
     head.position.copy(end).addScaledVector(dir, -0.06)
-    head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+    head.quaternion.setFromUnitVectors(GlitterScene.ARROW_UP, dir)
   }
 
   private buildGlitterPoint() {
@@ -702,6 +729,7 @@ export class GlitterScene {
       geo,
       new THREE.MeshBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.15, side: THREE.DoubleSide, depthWrite: false }),
     )
+    this.coneMesh.renderOrder = 2
     // 弧缘线 + 5 条母线
     this.coneRim = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(new Array(N).fill(0).map(() => new THREE.Vector3())),
@@ -715,101 +743,21 @@ export class GlitterScene {
     this.pointGroup.visible = false
   }
 
-  /* ---------------- 亮线分析：CPU 侧 f(Q) 与投影 ---------------- */
-  /** 与着色器一致的 f(Q) = (p̂ − q̂)·t̂（z=0 平面上的点 Q） */
-  private fAtPoint(Q: THREE.Vector3): number {
-    const p = this.params
-    const ph =
-      p.lightMode === 'point'
-        ? new THREE.Vector3(Q.x - p.pointLightPos.x, Q.y - p.pointLightPos.y, Q.z - p.pointLightPos.z).normalize()
-        : this.sunDir(p.azimuth, p.elevation).multiplyScalar(-1)
-    const qh = new THREE.Vector3(p.eyePos.x - Q.x, p.eyePos.y - Q.y, p.eyePos.z - Q.z).normalize()
-    let thx = 0
-    let thy = 0
-    if (p.surfaceType === 'plate') {
-      const a = p.grooveAngle * DEG
-      thx = Math.cos(a)
-      thy = Math.sin(a)
-    } else {
-      const rx = Q.x - p.centerX
-      const ry = Q.y - p.centerY
-      const r = Math.hypot(rx, ry)
-      if (r >= 1e-4) {
-        thx = -ry / r
-        thy = rx / r
-      }
-    }
-    return (ph.x - qh.x) * thx + (ph.y - qh.y) * thy + (ph.z - qh.z) * 0
-  }
-
-  /** Q 是否落在反射面范围内（板按沟槽角旋转后的局部矩形判定） */
-  private inSurfaceBounds(Q: THREE.Vector3): boolean {
-    const p = this.params
-    const dx = Q.x - p.centerX
-    const dy = Q.y - p.centerY
-    if (p.surfaceType === 'disk') return Math.hypot(dx, dy) <= p.diskRadius + 1e-6
-    const a = p.grooveAngle * DEG
-    const lx = dx * Math.cos(a) + dy * Math.sin(a)
-    const ly = -dx * Math.sin(a) + dy * Math.cos(a)
-    return Math.abs(lx) <= p.plateWidth / 2 + 1e-6 && Math.abs(ly) <= p.plateDepth / 2 + 1e-6
-  }
+  /* ---------------- 亮线分析：CPU 侧 f(Q) 与投影（实现见 glitterMath.ts，零分配） ---------------- */
+  private pointOut = { x: 0, y: 0 } // projectToGlitter/findInitial 的复用输出槽
 
   /** 把目标点 (Tx,Ty) 投影到亮线 f=0 上：牛顿迭代压到零线 + 沿切线逼近目标；从 guess 出发保证分支连续 */
   private projectToGlitter(Tx: number, Ty: number, guess: THREE.Vector3): THREE.Vector3 | null {
-    const Q = new THREE.Vector3(guess.x, guess.y, 0)
-    const h = 1e-3
-    for (let i = 0; i < 30; i++) {
-      const f = this.fAtPoint(Q)
-      const gx = (this.fAtPoint(new THREE.Vector3(Q.x + h, Q.y, 0)) - f) / h
-      const gy = (this.fAtPoint(new THREE.Vector3(Q.x, Q.y + h, 0)) - f) / h
-      const n2 = gx * gx + gy * gy
-      if (n2 < 1e-12) break
-      Q.x -= (gx * f) / n2
-      Q.y -= (gy * f) / n2
-      // 沿切线朝目标点滑动（切向 = (−gy, gx)）
-      const s = (((Tx - Q.x) * -gy + (Ty - Q.y) * gx) / n2) * 0.6
-      Q.x += -gy * s
-      Q.y += gx * s
-    }
-    return Math.abs(this.fAtPoint(Q)) < 1e-5 && this.inSurfaceBounds(Q) ? Q : null
+    return projectToGlitter(this.params, Tx, Ty, guess.x, guess.y, this.pointOut)
+      ? new THREE.Vector3(this.pointOut.x, this.pointOut.y, 0)
+      : null
   }
 
   /** 开关打开时的初始点：优先镜面反射点 O（必在亮线上）；否则粗采样找零线最近点再精化 */
   private findInitialGlitterPoint(): THREE.Vector3 | null {
-    const p = this.params
-    // O：镜面反射点（z=0 平面镜反射定律）
-    let O: THREE.Vector3
-    if (p.lightMode === 'point') {
-      const s = p.pointLightPos.z / (p.pointLightPos.z + p.eyePos.z)
-      O = new THREE.Vector3(
-        p.pointLightPos.x + (p.eyePos.x - p.pointLightPos.x) * s,
-        p.pointLightPos.y + (p.eyePos.y - p.pointLightPos.y) * s,
-        0,
-      )
-    } else {
-      const d = this.sunDir(p.azimuth, p.elevation).multiplyScalar(-1)
-      const t = p.eyePos.z / d.z === 0 ? 0 : p.eyePos.z / -d.z
-      O = new THREE.Vector3(p.eyePos.x + d.x * t, p.eyePos.y + d.y * t, 0)
-    }
-    if (this.inSurfaceBounds(O) && Math.abs(this.fAtPoint(O)) < 1e-6) return O
-    // 粗采样：面上网格找 |f| 最小点作为初值
-    const ext = p.surfaceType === 'disk' ? p.diskRadius : Math.max(p.plateWidth, p.plateDepth) / 2
-    let best: THREE.Vector3 | null = null
-    let bestAbs = Infinity
-    const N = 50
-    for (let i = 0; i <= N; i++) {
-      for (let j = 0; j <= N; j++) {
-        const Q = new THREE.Vector3(p.centerX - ext + (2 * ext * i) / N, p.centerY - ext + (2 * ext * j) / N, 0)
-        if (!this.inSurfaceBounds(Q)) continue
-        const a = Math.abs(this.fAtPoint(Q))
-        if (a < bestAbs) {
-          bestAbs = a
-          best = Q
-        }
-      }
-    }
-    if (!best) return null
-    return this.projectToGlitter(best.x, best.y, best)
+    return findInitialGlitterPoint(this.params, this.pointOut)
+      ? new THREE.Vector3(this.pointOut.x, this.pointOut.y, 0)
+      : null
   }
 
   /* ---------------- 亮线分析：逐帧更新（拖点/拖光源/拖眼睛/改参数全在这里汇聚） ---------------- */
@@ -820,34 +768,17 @@ export class GlitterScene {
       return
     }
     // 参数变化时把点重新投影回新亮线（保持分支连续）；开关刚打开时找初始点
-    const key = [
-      p.lightMode,
-      p.azimuth,
-      p.elevation,
-      p.pointLightPos.x,
-      p.pointLightPos.y,
-      p.pointLightPos.z,
-      p.surfaceType,
-      p.plateWidth,
-      p.plateDepth,
-      p.grooveAngle,
-      p.diskRadius,
-      p.centerX,
-      p.centerY,
-      p.eyePos.x,
-      p.eyePos.y,
-      p.eyePos.z,
-    ].join('|')
     if (this.pointNeedsInit) {
       const Q = this.findInitialGlitterPoint()
       if (Q) {
         this.pointPos.copy(Q)
         this.pointNeedsInit = false
+        this.pointParamsChanged(p) // 同步快照，避免下一帧重复投影
       } else {
         this.pointGroup.visible = false
         return // 面上无亮线；保持待初始化，参数变化后再试
       }
-    } else if (key !== this.pointParamsKey) {
+    } else if (this.pointParamsChanged(p)) {
       const Q = this.projectToGlitter(this.pointPos.x, this.pointPos.y, this.pointPos) ?? this.findInitialGlitterPoint()
       if (!Q) {
         this.pointGroup.visible = false
@@ -855,25 +786,28 @@ export class GlitterScene {
       }
       this.pointPos.copy(Q)
     }
-    this.pointParamsKey = key
     this.pointGroup.visible = true
     if (!(this.tc.dragging && this.tc.object === this.pointHandle)) {
       this.pointHandle.position.set(this.pointPos.x, this.pointPos.y, GLITTER_Z + 0.02)
     }
-    const P = new THREE.Vector3(this.pointPos.x, this.pointPos.y, GLITTER_Z + 0.02)
+    const P = this.tmpGP.set(this.pointPos.x, this.pointPos.y, GLITTER_Z + 0.02)
 
     // p̂：入射传播方向；E：眼睛
-    const E = new THREE.Vector3(p.eyePos.x, p.eyePos.y, p.eyePos.z)
-    const ph =
-      p.lightMode === 'point'
-        ? new THREE.Vector3(P.x - p.pointLightPos.x, P.y - p.pointLightPos.y, P.z - p.pointLightPos.z).normalize()
-        : this.sunDir(p.azimuth, p.elevation).multiplyScalar(-1)
+    const E = this.tmpGE.set(p.eyePos.x, p.eyePos.y, p.eyePos.z)
+    const ph = this.tmpGPh
+    if (p.lightMode === 'point') {
+      ph.set(P.x - p.pointLightPos.x, P.y - p.pointLightPos.y, P.z - p.pointLightPos.z).normalize()
+    } else {
+      const az = p.azimuth * DEG
+      const el = p.elevation * DEG
+      ph.set(-Math.cos(el) * Math.cos(az), -Math.cos(el) * Math.sin(az), -Math.sin(el))
+    }
 
     // 入射光箭头
     if (p.lightMode === 'point') {
-      this.updateArrow(this.incidentArrow, new THREE.Vector3(p.pointLightPos.x, p.pointLightPos.y, p.pointLightPos.z), P)
+      this.updateArrow(this.incidentArrow, this.tmpGS.set(p.pointLightPos.x, p.pointLightPos.y, p.pointLightPos.z), P)
     } else {
-      this.updateArrow(this.incidentArrow, P.clone().addScaledVector(ph, -2.2), P)
+      this.updateArrow(this.incidentArrow, this.tmpGS.copy(P).addScaledVector(ph, -2.2), P)
     }
     // 反射光箭头：P → 眼睛
     this.updateArrow(this.reflectedArrow, P, E)
@@ -936,7 +870,6 @@ export class GlitterScene {
     conePos.needsUpdate = true
     rimAttr.needsUpdate = true
     genAttr.needsUpdate = true
-    this.coneMesh.geometry.computeVertexNormals()
   }
 
   /* ---------------- 眼睛发出的圆锥（光路可逆，仅平行光+拉丝板） ---------------- */
@@ -955,6 +888,7 @@ export class GlitterScene {
       geo,
       new THREE.MeshBasicMaterial({ color: 0x7fb0e8, transparent: true, opacity: 0.09, side: THREE.DoubleSide, depthWrite: false }),
     )
+    this.eyeConeMesh.renderOrder = 2
     this.eyeConeRim = new THREE.LineLoop(
       new THREE.BufferGeometry().setFromPoints(new Array(N).fill(0).map(() => new THREE.Vector3())),
       new THREE.LineBasicMaterial({ color: 0x9cc2f0, transparent: true, opacity: 0.4 }),
@@ -1031,7 +965,6 @@ export class GlitterScene {
     conePos.needsUpdate = true
     rimAttr.needsUpdate = true
     genAttr.needsUpdate = true
-    this.eyeConeMesh.geometry.computeVertexNormals()
     this.eyeConeGroup.visible = true
   }
 
@@ -1305,11 +1238,14 @@ export class GlitterScene {
     this.render()
   }
 
+  // getBoundingClientRect 每帧调用会强制同步布局；改为在 ResizeObserver 回调中缓存
+  private canvasRect: DOMRect | null = null
+  private insetRect: DOMRect | null = null
+
   private render() {
-    const canvas = this.renderer.domElement
     // 注意：three.js 的 setViewport/setScissor 接受 CSS 像素，内部会自行乘以 pixelRatio，
     // 这里不能再乘 devicePixelRatio，否则高 DPR 屏幕上小窗视口会被推出画布而不可见。
-    const crect = canvas.getBoundingClientRect()
+    const crect = this.canvasRect ?? this.renderer.domElement.getBoundingClientRect()
 
     this.renderer.setScissorTest(true)
     this.renderer.setViewport(0, 0, crect.width, crect.height)
@@ -1317,7 +1253,7 @@ export class GlitterScene {
     this.renderer.render(this.scene, this.mainCam)
 
     // 观察者视角小窗：同一 renderer，setViewport/setScissor 第二遍渲染
-    const rect = this.insetEl.getBoundingClientRect()
+    const rect = this.insetRect ?? this.insetEl.getBoundingClientRect()
     const vw = Math.round(rect.width)
     const vh = Math.round(rect.height)
     if (vw > 8 && vh > 8) {
@@ -1334,9 +1270,12 @@ export class GlitterScene {
   private resize() {
     const w = this.container.clientWidth || 1
     const h = this.container.clientHeight || 1
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)) // 跨屏拖动后 DPR 可能变化
     this.renderer.setSize(w, h, false)
     this.mainCam.aspect = w / h
     this.mainCam.updateProjectionMatrix()
+    this.canvasRect = this.renderer.domElement.getBoundingClientRect()
+    this.insetRect = this.insetEl.getBoundingClientRect()
   }
 
   /* ---------------- 物理正确性自检（CPU 复现 shader 公式） ---------------- */
@@ -1347,20 +1286,8 @@ export class GlitterScene {
     const L = new THREE.Vector3(p.pointLightPos.x, p.pointLightPos.y, p.pointLightPos.z)
     const d = this.sunDir(p.azimuth, p.elevation).multiplyScalar(-1) // 传播方向
 
-    const fAt = (Q: THREE.Vector3): number => {
-      const ph = p.lightMode === 'point' ? Q.clone().sub(L).normalize() : d.clone()
-      const qh = E.clone().sub(Q).normalize()
-      let th: THREE.Vector3
-      if (p.surfaceType === 'plate') {
-        const th0 = p.grooveAngle * DEG
-        th = new THREE.Vector3(Math.cos(th0), Math.sin(th0), 0)
-      } else {
-        const rel = Q.clone().sub(C)
-        const r = Math.hypot(rel.x, rel.y)
-        th = r < 1e-4 ? new THREE.Vector3() : new THREE.Vector3(-rel.y, rel.x, 0).divideScalar(r)
-      }
-      return ph.sub(qh).dot(th)
-    }
+    // f(Q) 统一复用 glitterMath 的实现（与 shader/投影同一份公式，不再本地复制）
+    const fAtQ = (Q: THREE.Vector3): number => fAt(p, Q.x, Q.y, Q.z)
 
     // 镜面反射点 O（平面镜 z=0 反射定律）
     let O: THREE.Vector3
@@ -1373,12 +1300,12 @@ export class GlitterScene {
       const tt = E.z / qh.z
       O = E.clone().addScaledVector(qh, -tt)
     }
-    const fO = fAt(O)
+    const fO = fAtQ(O)
     const msgs: string[] = []
     const okO = Math.abs(fO) < 1e-6
     msgs.push(`镜面点 O=(${O.x.toFixed(3)}, ${O.y.toFixed(3)}, 0)，|f(O)|=${Math.abs(fO).toExponential(2)} → ${okO ? '通过：亮线必过镜面点' : '失败'}`)
     if (p.surfaceType === 'disk') {
-      const fC = fAt(C)
+      const fC = fAtQ(C)
       msgs.push(`圆心 f(C)=${fC} → ${fC === 0 ? '通过：Q=C 处 t̂ 退化，圆心天然发亮' : '失败'}`)
     }
     if (p.lightMode === 'parallel') {

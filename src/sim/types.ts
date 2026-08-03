@@ -54,6 +54,13 @@ export const DEFAULT_PARAMS: SimParams = {
   showEyeCone: false,
 }
 
+/** 深拷贝参数（嵌套 Vec3 不共享引用，防止预设/DEFAULT_PARAMS 之间串数据） */
+export const cloneParams = (p: SimParams): SimParams => ({
+  ...p,
+  pointLightPos: { ...p.pointLightPos },
+  eyePos: { ...p.eyePos },
+})
+
 export interface Preset {
   id: string
   label: string

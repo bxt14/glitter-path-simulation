@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SimParams } from '@/sim/types'
-import { DEFAULT_PARAMS } from '@/sim/types'
+import { DEFAULT_PARAMS, cloneParams } from '@/sim/types'
 import type { DragUpdate, GlitterScene } from '@/sim/glitterScene'
 import GlitterCanvas from '@/components/GlitterCanvas'
 import ControlPanel from '@/components/ControlPanel'
@@ -27,7 +27,7 @@ export default function App() {
   }, [])
 
   const onPreset = useCallback((p: SimParams) => {
-    setParams({ ...p, pointLightPos: { ...p.pointLightPos }, eyePos: { ...p.eyePos } })
+    setParams(cloneParams(p))
     // 预设生效后运行一次物理自检（rAF 确保 scene 已拿到新参数）
     requestAnimationFrame(() => sceneRef.current?.selfCheck())
   }, [])

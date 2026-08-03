@@ -1,5 +1,5 @@
 import type { SimParams } from '@/sim/types'
-import { PRESETS, DEFAULT_PARAMS, clamp } from '@/sim/types'
+import { PRESETS, DEFAULT_PARAMS, clamp, cloneParams } from '@/sim/types'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Slider } from '@/components/ui/slider'
 import { Button } from '@/components/ui/button'
@@ -162,8 +162,10 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
           </span>
         </SectionTitle>
         <div className="flex items-center justify-between">
-          <span className="text-xs text-[#9aa5b4]">显示亮线上的一点</span>
-          <Switch checked={p.showGlitterPoint} onCheckedChange={(v) => onChange({ showGlitterPoint: v })} />
+          <label htmlFor="sw-glitter-point" className="cursor-pointer text-xs text-[#9aa5b4]">
+            显示亮线上的一点
+          </label>
+          <Switch id="sw-glitter-point" checked={p.showGlitterPoint} onCheckedChange={(v) => onChange({ showGlitterPoint: v })} />
         </div>
         {p.showGlitterPoint && (
           <p className="text-[11px] leading-relaxed text-[#66707e]">
@@ -173,8 +175,10 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
         {p.lightMode === 'parallel' && p.surfaceType === 'plate' && (
           <>
             <div className="flex items-center justify-between">
-              <span className="text-xs text-[#9aa5b4]">显示眼睛发出的圆锥</span>
-              <Switch checked={p.showEyeCone} onCheckedChange={(v) => onChange({ showEyeCone: v })} />
+              <label htmlFor="sw-eye-cone" className="cursor-pointer text-xs text-[#9aa5b4]">
+                显示眼睛发出的圆锥
+              </label>
+              <Switch id="sw-eye-cone" checked={p.showEyeCone} onCheckedChange={(v) => onChange({ showEyeCone: v })} />
             </div>
             {p.showEyeCone && (
               <p className="text-[11px] leading-relaxed text-[#66707e]">
@@ -209,7 +213,7 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
         variant="ghost"
         size="sm"
         className="mt-auto w-full text-[#9aa5b4] hover:bg-[#1a2130] hover:text-[#e6ebf2]"
-        onClick={() => onPreset({ ...DEFAULT_PARAMS, pointLightPos: { ...DEFAULT_PARAMS.pointLightPos }, eyePos: { ...DEFAULT_PARAMS.eyePos } })}
+        onClick={() => onPreset(cloneParams(DEFAULT_PARAMS))}
       >
         <RotateCcw className="size-3.5" /> 重置全部参数
       </Button>

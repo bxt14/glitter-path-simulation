@@ -787,7 +787,12 @@ export class GlitterScene {
     const u = this.glitterMat.uniforms
     u.uLightMode.value = p.lightMode === 'point' ? 1 : 0
     u.uSurfaceType.value = p.surfaceType === 'plate' ? 0 : 1
-    u.uGrooveAngle.value = p.grooveAngle * DEG
+    u.uGrooveAngle.value = this.effGrooveAngle()
+  }
+
+  /** 有效沟槽角：θ 参数 + 旋转拖动中 surfaceGroup 累积的 z 旋转（松手时清零并提交回 θ），保证亮线实时跟手 */
+  private effGrooveAngle(): number {
+    return (this.params.grooveAngle + this.surfaceGroup.rotation.z / DEG) * DEG
   }
 
   /* ---------------- 渲染循环：每帧从把手实际位置推导 uniform ---------------- */

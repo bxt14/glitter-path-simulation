@@ -30,6 +30,8 @@ export interface SimParams {
   centerY: number
   /** 亮线分析：显示亮线上的可拖动点 + 入射光/沟槽半光锥/反射光 */
   showGlitterPoint: boolean
+  /** 亮线分析（仅平行光+拉丝板）：显示由光路可逆从眼睛发出的圆锥，其与板面交线即亮线 */
+  showEyeCone: boolean
 }
 
 export const DEFAULT_PARAMS: SimParams = {
@@ -49,6 +51,7 @@ export const DEFAULT_PARAMS: SimParams = {
   centerX: 0,
   centerY: 0,
   showGlitterPoint: false,
+  showEyeCone: false,
 }
 
 export interface Preset {

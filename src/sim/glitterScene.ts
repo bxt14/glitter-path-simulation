@@ -268,6 +268,11 @@ export class GlitterScene {
   private coneMesh!: THREE.Mesh
   private coneRim!: THREE.Line
   private coneGens!: THREE.LineSegments
+  // 眼睛发出的圆锥（光路可逆：仅平行光+拉丝板；与板面交线即亮线）
+  private eyeConeGroup = new THREE.Group()
+  private eyeConeMesh!: THREE.Mesh
+  private eyeConeRim!: THREE.LineLoop
+  private eyeConeGens!: THREE.LineSegments
 
   private raf = 0
   private clock = new THREE.Clock()
@@ -436,6 +441,8 @@ export class GlitterScene {
     /* ---------------- 亮线分析点 ---------------- */
     this.buildGlitterPoint()
     this.scene.add(this.pointGroup)
+    this.buildEyeCone()
+    this.scene.add(this.eyeConeGroup)
 
     /* ---------------- TransformControls：点击选中 + 拖动 ---------------- */
     this.tc = new TransformControls(this.mainCam, this.renderer.domElement)
@@ -932,6 +939,102 @@ export class GlitterScene {
     this.coneMesh.geometry.computeVertexNormals()
   }
 
+  /* ---------------- 眼睛发出的圆锥（光路可逆，仅平行光+拉丝板） ---------------- */
+  private static EYE_CONE_N = 72 // 整圆雉缘采样数（φ ∈ [0, 360°)）
+
+  private buildEyeCone() {
+    const N = GlitterScene.EYE_CONE_N
+    // 索引扇面：顶点 0 = 眼睛（锥顶），1..N = 锥缘
+    const geo = new THREE.BufferGeometry()
+    const pos = new Float32Array((N + 1) * 3)
+    const idx: number[] = []
+    for (let i = 0; i < N; i++) idx.push(0, i + 1, ((i + 1) % N) + 1)
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    geo.setIndex(idx)
+    this.eyeConeMesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({ color: 0x7fb0e8, transparent: true, opacity: 0.09, side: THREE.DoubleSide, depthWrite: false }),
+    )
+    this.eyeConeRim = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(new Array(N).fill(0).map(() => new THREE.Vector3())),
+      new THREE.LineBasicMaterial({ color: 0x9cc2f0, transparent: true, opacity: 0.4 }),
+    )
+    // 4 条朝下穿过板面的母线（φ 余弦为负的分量向下）
+    this.eyeConeGens = new THREE.LineSegments(
+      new THREE.BufferGeometry().setFromPoints(new Array(8).fill(0).map(() => new THREE.Vector3())),
+      new THREE.LineBasicMaterial({ color: 0x9cc2f0, transparent: true, opacity: 0.3 }),
+    )
+    this.eyeConeGroup.add(this.eyeConeMesh, this.eyeConeRim, this.eyeConeGens)
+    this.eyeConeGroup.visible = false
+  }
+
+  /**
+   * 光路可逆锥：发亮条件 q̂·t̂ = p̂·t̂ = c 对平行光是常数，
+   * 故从眼睛出发、与 t̂ 夹角为 α = arccos|c| 的所有方向构成一个圆锥，
+   * 它与板面 z=0 的交线正是反射亮线（轴平行于平面 → 双曲线的一支）。
+   */
+  private updateEyeCone() {
+    const p = this.params
+    if (!p.showEyeCone || p.lightMode !== 'parallel' || p.surfaceType !== 'plate') {
+      this.eyeConeGroup.visible = false
+      return
+    }
+    // 与循环一致的实时量：d̂ 取自太阳把手，t̂ 含旋转拖拽中的临时角
+    const center = this.surfaceGroup.position
+    const d = this.tmpA.subVectors(center, this.sunHandle.position)
+    if (d.lengthSq() < 1e-8) d.set(0, 0, -1)
+    else d.normalize()
+    const th = this.effGrooveAngle()
+    const thx = Math.cos(th)
+    const thy = Math.sin(th)
+    const c = d.x * thx + d.y * thy
+    const sinA = Math.sqrt(Math.max(0, 1 - c * c))
+    if (sinA < 1e-3) {
+      this.eyeConeGroup.visible = false // α≈0：锥退化为射线，与板面无交线
+      return
+    }
+    const sgn = c < 0 ? -1 : 1
+    const ax = thx * sgn
+    const ay = thy * sgn
+    const cosA = Math.abs(c)
+    const E = this.eyeHandle.position
+    // 锥长：最低母线（gz = −sinα）触达板面后再延伸 60%，保证交线完整可见
+    const L = clamp((E.z / sinA) * 1.6, 1.5, 30)
+    const u2x = ay
+    const u2y = -ax
+    const N = GlitterScene.EYE_CONE_N
+    const conePos = this.eyeConeMesh.geometry.attributes.position as THREE.BufferAttribute
+    const rimAttr = this.eyeConeRim.geometry.attributes.position as THREE.BufferAttribute
+    conePos.setXYZ(0, E.x, E.y, E.z)
+    for (let i = 0; i < N; i++) {
+      const phi = (2 * Math.PI * i) / N
+      const cf = Math.cos(phi)
+      const sf = Math.sin(phi)
+      const gx = ax * cosA + sinA * u2x * sf
+      const gy = ay * cosA + sinA * u2y * sf
+      const gz = sinA * cf
+      const rx = E.x + L * gx
+      const ry = E.y + L * gy
+      const rz = E.z + L * gz
+      conePos.setXYZ(i + 1, rx, ry, rz)
+      rimAttr.setXYZ(i, rx, ry, rz)
+    }
+    const genAttr = this.eyeConeGens.geometry.attributes.position as THREE.BufferAttribute
+    const genPhis = [120, 160, 200, 240]
+    for (let k = 0; k < 4; k++) {
+      const phi = (genPhis[k] * Math.PI) / 180
+      const cf = Math.cos(phi)
+      const sf = Math.sin(phi)
+      genAttr.setXYZ(k * 2, E.x, E.y, E.z)
+      genAttr.setXYZ(k * 2 + 1, E.x + L * (ax * cosA + sinA * u2x * sf), E.y + L * (ay * cosA + sinA * u2y * sf), E.z + L * sinA * cf)
+    }
+    conePos.needsUpdate = true
+    rimAttr.needsUpdate = true
+    genAttr.needsUpdate = true
+    this.eyeConeMesh.geometry.computeVertexNormals()
+    this.eyeConeGroup.visible = true
+  }
+
   /* ---------------- 选中与拖动 ---------------- */
   private handlePick = (ev: PointerEvent) => {
     if (this.tc.dragging) return
@@ -1197,6 +1300,7 @@ export class GlitterScene {
 
     // 亮线分析点（开关打开时逐帧更新锥面/光线；拖点期间位置由 handleObjectChange 维护）
     this.updateGlitterPoint()
+    this.updateEyeCone()
 
     this.render()
   }

@@ -170,6 +170,19 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
             拖动亮线上的点：同步显示该点的入射光、沟槽反射半光锥（锥面扫过眼睛）与射向眼睛的反射光。
           </p>
         )}
+        {p.lightMode === 'parallel' && p.surfaceType === 'plate' && (
+          <>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#9aa5b4]">显示眼睛发出的圆锥</span>
+              <Switch checked={p.showEyeCone} onCheckedChange={(v) => onChange({ showEyeCone: v })} />
+            </div>
+            {p.showEyeCone && (
+              <p className="text-[11px] leading-relaxed text-[#66707e]">
+                由光路可逆，从眼睛出发、与沟槽方向 t̂ 夹角等于 α 的所有光线构成一个圆锥；它与板面的交线正是反射亮线。
+              </p>
+            )}
+          </>
+        )}
       </section>
 
       <Separator className="bg-[#232a38]" />

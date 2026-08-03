@@ -9,20 +9,25 @@ interface Props {
   insetRef: RefObject<HTMLDivElement | null>
   onDragUpdate: (u: DragUpdate) => void
   sceneRef: RefObject<GlitterScene | null>
+  onSelectionChange?: (id: string | null) => void
 }
 
 /** 挂载原生 Three.js 场景（无 StrictMode，useEffect 只跑一次） */
-export default function GlitterCanvas({ params, insetRef, onDragUpdate, sceneRef }: Props) {
+export default function GlitterCanvas({ params, insetRef, onDragUpdate, sceneRef, onSelectionChange }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const dragCbRef = useRef(onDragUpdate)
   dragCbRef.current = onDragUpdate
+  const selCbRef = useRef(onSelectionChange)
+  selCbRef.current = onSelectionChange
   const initParamsRef = useRef(params)
 
   useEffect(() => {
     const container = containerRef.current
     const inset = insetRef.current
     if (!container || !inset) return
-    const scene = new GlitterScene(container, inset, initParamsRef.current, (u) => dragCbRef.current(u))
+    const scene = new GlitterScene(container, inset, initParamsRef.current, (u) => dragCbRef.current(u), (id) =>
+      selCbRef.current?.(id),
+    )
     sceneRef.current = scene
     scene.selfCheck()
     return () => {

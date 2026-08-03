@@ -12,6 +12,7 @@ export interface DragUpdate {
   centerY?: number
   azimuth?: number
   elevation?: number
+  grooveAngle?: number
 }
 
 const SUN_R = 6 // 太阳把手轨道半径
@@ -207,6 +208,9 @@ export class GlitterScene {
   private container: HTMLElement
   private insetEl: HTMLElement
   private onDragUpdate: (u: DragUpdate) => void
+  private onSelectionChange: ((id: string | null) => void) | null
+  /** 反射面的变换模式：平移（默认）/ 旋转（仅拉丝板有意义，松手提交到沟槽角 θ） */
+  private transformMode: 'translate' | 'rotate' = 'translate'
 
   private renderer: THREE.WebGLRenderer
   private scene = new THREE.Scene()
@@ -258,11 +262,18 @@ export class GlitterScene {
   private resizeObs: ResizeObserver
   private disposed = false
 
-  constructor(container: HTMLElement, insetEl: HTMLElement, params: SimParams, onDragUpdate: (u: DragUpdate) => void) {
+  constructor(
+    container: HTMLElement,
+    insetEl: HTMLElement,
+    params: SimParams,
+    onDragUpdate: (u: DragUpdate) => void,
+    onSelectionChange?: (id: string | null) => void,
+  ) {
     this.container = container
     this.insetEl = insetEl
     this.params = params
     this.onDragUpdate = onDragUpdate
+    this.onSelectionChange = onSelectionChange ?? null
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -417,6 +428,16 @@ export class GlitterScene {
     this.scene.add(this.tc.getHelper())
     this.tc.addEventListener('dragging-changed', (e) => {
       this.orbit.enabled = !e.value
+      // 反射面旋转拖动结束时：把累积的 z 旋转提交到沟槽角 θ（仅拉丝板；圆盘各向同性，直接归零）
+      if (!e.value && this.tc.object === this.surfaceGroup) {
+        const dz = this.surfaceGroup.rotation.z
+        this.surfaceGroup.rotation.set(0, 0, 0)
+        if (Math.abs(dz) > 1e-4 && this.params.surfaceType === 'plate') {
+          let th = (this.params.grooveAngle + dz / DEG) % 180
+          if (th < 0) th += 180
+          this.onDragUpdate({ grooveAngle: Math.round(th * 10) / 10 })
+        }
+      }
       // 太阳拖动结束时，把手吸附回以板心为球心、SUN_R 为半径的球面
       if (!e.value && this.tc.object === this.sunHandle) {
         const c = this.surfaceGroup.position
@@ -630,8 +651,29 @@ export class GlitterScene {
         break
       }
     }
-    if (obj) this.tc.attach(obj)
-    else this.tc.detach()
+    if (obj) {
+      // 模式跟随选中对象：反射面可用当前模式（平移/旋转），其余把手恒为平移
+      const id = obj.userData.dragId as string
+      this.tc.setMode(id === 'surface' ? this.transformMode : 'translate')
+      this.applyGizmoAxes(id)
+      this.tc.attach(obj)
+      this.onSelectionChange?.(id)
+    } else {
+      this.tc.detach()
+      this.onSelectionChange?.(null)
+    }
+  }
+
+  /** 按选中对象裁剪 gizmo 轴：反射面平移只给 XY 箭头（z 锁定）、旋转只给 Z 环（x/y 翻转无意义） */
+  private applyGizmoAxes(id: string) {
+    if (id === 'surface') {
+      const rotating = this.transformMode === 'rotate'
+      this.tc.showX = !rotating
+      this.tc.showY = !rotating
+      this.tc.showZ = rotating
+    } else {
+      this.tc.showX = this.tc.showY = this.tc.showZ = true
+    }
   }
 
   private handleObjectChange() {
@@ -655,6 +697,9 @@ export class GlitterScene {
       p.z = 0
       p.x = clamp(p.x, -6, 6)
       p.y = clamp(p.y, -6, 6)
+      // 旋转模式下锁定绕 x/y 轴的翻转，只允许绕竖直 z 轴转；z 旋转在松手时提交到 θ
+      obj.rotation.x = 0
+      obj.rotation.y = 0
       this.onDragUpdate({ centerX: round(p.x), centerY: round(p.y) })
     } else if (id === 'sun') {
       // 拖动中不回拉把手：gizmo 与太阳始终重合，方位角/仰角实时取自当前位置；
@@ -686,6 +731,15 @@ export class GlitterScene {
   setParams(params: SimParams) {
     this.params = params
     this.applyParams()
+  }
+
+  /** 切换反射面的变换模式（平移/旋转）。仅在反射面被选中时对 gizmo 生效。 */
+  setTransformMode(mode: 'translate' | 'rotate') {
+    this.transformMode = mode
+    if (this.tc.object === this.surfaceGroup) {
+      this.tc.setMode(mode)
+      this.applyGizmoAxes('surface')
+    }
   }
 
   private applyParams() {

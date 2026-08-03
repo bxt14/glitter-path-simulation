@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SimParams } from '@/sim/types'
 import { DEFAULT_PARAMS } from '@/sim/types'
 import type { DragUpdate, GlitterScene } from '@/sim/glitterScene'
@@ -6,11 +6,13 @@ import GlitterCanvas from '@/components/GlitterCanvas'
 import ControlPanel from '@/components/ControlPanel'
 import InfoPanel from '@/components/InfoPanel'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { SlidersHorizontal, X } from 'lucide-react'
+import { Move, RotateCw, SlidersHorizontal, X } from 'lucide-react'
 
 export default function App() {
   const [params, setParams] = useState<SimParams>(DEFAULT_PARAMS)
   const [panelOpen, setPanelOpen] = useState(false)
+  const [selection, setSelection] = useState<string | null>(null)
+  const [transformMode, setTransformMode] = useState<'translate' | 'rotate'>('translate')
   const isMobile = useIsMobile()
   const insetRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<GlitterScene | null>(null)
@@ -30,6 +32,19 @@ export default function App() {
     requestAnimationFrame(() => sceneRef.current?.selfCheck())
   }, [])
 
+  // 旋转模式仅对拉丝板有意义：切到圆盘或取消选中时回落到平移模式
+  useEffect(() => {
+    if (params.surfaceType !== 'plate' && transformMode === 'rotate') {
+      setTransformMode('translate')
+      sceneRef.current?.setTransformMode('translate')
+    }
+  }, [params.surfaceType, transformMode])
+
+  const onModeSwitch = useCallback((m: 'translate' | 'rotate') => {
+    setTransformMode(m)
+    sceneRef.current?.setTransformMode(m)
+  }, [])
+
   // 观察者视角小窗尺寸：移动端缩小，避免遮挡场景
   const insetW = isMobile ? 168 : 320
   const insetH = isMobile ? 110 : 208
@@ -37,7 +52,29 @@ export default function App() {
   return (
     <div className="flex h-[100dvh] overflow-hidden bg-[#0b0e13] text-[#c9d1d9]">
       <main className="relative min-w-0 flex-1">
-        <GlitterCanvas params={params} insetRef={insetRef} onDragUpdate={onDragUpdate} sceneRef={sceneRef} />
+        <GlitterCanvas params={params} insetRef={insetRef} onDragUpdate={onDragUpdate} sceneRef={sceneRef} onSelectionChange={setSelection} />
+
+        {/* 选中拉丝板时：平移/旋转模式切换（旋转环拖动松手后提交到沟槽角 θ） */}
+        {selection === 'surface' && params.surfaceType === 'plate' && (
+          <div className="absolute left-1/2 top-16 z-10 flex -translate-x-1/2 overflow-hidden rounded-full border border-[#2a3242] bg-[#11151d]/90 shadow-lg backdrop-blur md:top-4">
+            <button
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium transition-colors ${
+                transformMode === 'translate' ? 'bg-[#d4a054]/20 text-[#f0d9b0]' : 'text-[#9aa5b4] hover:text-[#e6ebf2]'
+              }`}
+              onClick={() => onModeSwitch('translate')}
+            >
+              <Move className="size-3.5" /> 平移
+            </button>
+            <button
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium transition-colors ${
+                transformMode === 'rotate' ? 'bg-[#d4a054]/20 text-[#f0d9b0]' : 'text-[#9aa5b4] hover:text-[#e6ebf2]'
+              }`}
+              onClick={() => onModeSwitch('rotate')}
+            >
+              <RotateCw className="size-3.5" /> 旋转
+            </button>
+          </div>
+        )}
 
         <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-lg border border-[#232a38] bg-[#11151d]/85 px-3 py-2 backdrop-blur md:left-4 md:top-4">
           <h1 className="text-[13px] font-semibold tracking-wide text-[#e6ebf2] md:text-sm">Glitter Path · 沟槽反射亮线模拟</h1>

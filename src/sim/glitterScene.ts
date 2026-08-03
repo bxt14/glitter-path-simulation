@@ -257,6 +257,18 @@ export class GlitterScene {
   private pointLine: THREE.Line
   private pointLightObj = new THREE.PointLight(0xffc47a, 20, 0, 1.8)
 
+  /* ---- 亮线分析：可拖动点 + 入射光/半光锥/反射光 ---- */
+  private pointGroup = new THREE.Group() // 整体可见性 = 开关 && 亮线存在于面上
+  private pointHandle = new THREE.Group() // 拖动把手（dragId='glitterPoint'）
+  private pointPos = new THREE.Vector3() // 点在面上的位置（z=0 平面坐标）
+  private pointNeedsInit = true
+  private pointParamsKey = ''
+  private incidentArrow!: THREE.Group
+  private reflectedArrow!: THREE.Group
+  private coneMesh!: THREE.Mesh
+  private coneRim!: THREE.Line
+  private coneGens!: THREE.LineSegments
+
   private raf = 0
   private clock = new THREE.Clock()
   private resizeObs: ResizeObserver
@@ -420,6 +432,10 @@ export class GlitterScene {
       new THREE.LineBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.32 }),
     )
     this.scene.add(this.parallelLines)
+
+    /* ---------------- 亮线分析点 ---------------- */
+    this.buildGlitterPoint()
+    this.scene.add(this.pointGroup)
 
     /* ---------------- TransformControls：点击选中 + 拖动 ---------------- */
     this.tc = new TransformControls(this.mainCam, this.renderer.domElement)
@@ -621,6 +637,301 @@ export class GlitterScene {
     this.scene.add(this.eyeLabel)
   }
 
+  /* ---------------- 亮线分析：构建 ---------------- */
+  private static CONE_RIM_N = 33 // 半光锥母线弧采样点数（φ ∈ [−90°, 90°]，z≥0 半锥）
+
+  /** 小箭头：线段 + 锥形箭头头，可整体更新起终点 */
+  private makeArrow(color: number): THREE.Group {
+    const g = new THREE.Group()
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }),
+    )
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.12, 10), new THREE.MeshBasicMaterial({ color }))
+    g.add(line, head)
+    g.userData.line = line
+    g.userData.head = head
+    return g
+  }
+
+  private updateArrow(g: THREE.Group, start: THREE.Vector3, end: THREE.Vector3) {
+    const line = g.userData.line as THREE.Line
+    const attr = line.geometry.attributes.position as THREE.BufferAttribute
+    attr.setXYZ(0, start.x, start.y, start.z)
+    attr.setXYZ(1, end.x, end.y, end.z)
+    attr.needsUpdate = true
+    const head = g.userData.head as THREE.Mesh
+    const dir = new THREE.Vector3().subVectors(end, start)
+    if (dir.lengthSq() < 1e-8) return
+    dir.normalize()
+    head.position.copy(end).addScaledVector(dir, -0.06)
+    head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+  }
+
+  private buildGlitterPoint() {
+    // 可拖动点标记：暖白小球 + 光晕
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.045, 20, 14), new THREE.MeshBasicMaterial({ color: 0xfff3dd }))
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.bulbTex, transparent: true, depthWrite: false, opacity: 0.9 }))
+    glow.scale.setScalar(0.32)
+    // 子对象不设 dragId（同太阳/灯泡把手约定，防止拾取附着在子对象上）
+    this.pointHandle.add(marker, glow)
+    this.pointHandle.userData.dragId = 'glitterPoint'
+    this.pointGroup.add(this.pointHandle)
+
+    // 入射光箭头（暖金）与反射光箭头（浅蓝，便于区分）
+    this.incidentArrow = this.makeArrow(0xffd27a)
+    this.reflectedArrow = this.makeArrow(0x8fd0ff)
+    this.pointGroup.add(this.incidentArrow, this.reflectedArrow)
+
+    // 半光锥：顶点在 Q、轴沿沟槽方向的半透明锥面（索引几何，逐帧只更新顶点位置）
+    const N = GlitterScene.CONE_RIM_N
+    const geo = new THREE.BufferGeometry()
+    const pos = new Float32Array((N + 1) * 3) // 0 = 顶点，1..N = 弧缘
+    const idx: number[] = []
+    for (let i = 0; i < N - 1; i++) idx.push(0, i + 1, i + 2)
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    geo.setIndex(idx)
+    this.coneMesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.15, side: THREE.DoubleSide, depthWrite: false }),
+    )
+    // 弧缘线 + 5 条母线
+    this.coneRim = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(new Array(N).fill(0).map(() => new THREE.Vector3())),
+      new THREE.LineBasicMaterial({ color: 0xffc47a, transparent: true, opacity: 0.6 }),
+    )
+    this.coneGens = new THREE.LineSegments(
+      new THREE.BufferGeometry().setFromPoints(new Array(10).fill(0).map(() => new THREE.Vector3())),
+      new THREE.LineBasicMaterial({ color: 0xffc47a, transparent: true, opacity: 0.38 }),
+    )
+    this.pointGroup.add(this.coneMesh, this.coneRim, this.coneGens)
+    this.pointGroup.visible = false
+  }
+
+  /* ---------------- 亮线分析：CPU 侧 f(Q) 与投影 ---------------- */
+  /** 与着色器一致的 f(Q) = (p̂ − q̂)·t̂（z=0 平面上的点 Q） */
+  private fAtPoint(Q: THREE.Vector3): number {
+    const p = this.params
+    const ph =
+      p.lightMode === 'point'
+        ? new THREE.Vector3(Q.x - p.pointLightPos.x, Q.y - p.pointLightPos.y, Q.z - p.pointLightPos.z).normalize()
+        : this.sunDir(p.azimuth, p.elevation).multiplyScalar(-1)
+    const qh = new THREE.Vector3(p.eyePos.x - Q.x, p.eyePos.y - Q.y, p.eyePos.z - Q.z).normalize()
+    let thx = 0
+    let thy = 0
+    if (p.surfaceType === 'plate') {
+      const a = p.grooveAngle * DEG
+      thx = Math.cos(a)
+      thy = Math.sin(a)
+    } else {
+      const rx = Q.x - p.centerX
+      const ry = Q.y - p.centerY
+      const r = Math.hypot(rx, ry)
+      if (r >= 1e-4) {
+        thx = -ry / r
+        thy = rx / r
+      }
+    }
+    return (ph.x - qh.x) * thx + (ph.y - qh.y) * thy + (ph.z - qh.z) * 0
+  }
+
+  /** Q 是否落在反射面范围内（板按沟槽角旋转后的局部矩形判定） */
+  private inSurfaceBounds(Q: THREE.Vector3): boolean {
+    const p = this.params
+    const dx = Q.x - p.centerX
+    const dy = Q.y - p.centerY
+    if (p.surfaceType === 'disk') return Math.hypot(dx, dy) <= p.diskRadius + 1e-6
+    const a = p.grooveAngle * DEG
+    const lx = dx * Math.cos(a) + dy * Math.sin(a)
+    const ly = -dx * Math.sin(a) + dy * Math.cos(a)
+    return Math.abs(lx) <= p.plateWidth / 2 + 1e-6 && Math.abs(ly) <= p.plateDepth / 2 + 1e-6
+  }
+
+  /** 把目标点 (Tx,Ty) 投影到亮线 f=0 上：牛顿迭代压到零线 + 沿切线逼近目标；从 guess 出发保证分支连续 */
+  private projectToGlitter(Tx: number, Ty: number, guess: THREE.Vector3): THREE.Vector3 | null {
+    const Q = new THREE.Vector3(guess.x, guess.y, 0)
+    const h = 1e-3
+    for (let i = 0; i < 30; i++) {
+      const f = this.fAtPoint(Q)
+      const gx = (this.fAtPoint(new THREE.Vector3(Q.x + h, Q.y, 0)) - f) / h
+      const gy = (this.fAtPoint(new THREE.Vector3(Q.x, Q.y + h, 0)) - f) / h
+      const n2 = gx * gx + gy * gy
+      if (n2 < 1e-12) break
+      Q.x -= (gx * f) / n2
+      Q.y -= (gy * f) / n2
+      // 沿切线朝目标点滑动（切向 = (−gy, gx)）
+      const s = (((Tx - Q.x) * -gy + (Ty - Q.y) * gx) / n2) * 0.6
+      Q.x += -gy * s
+      Q.y += gx * s
+    }
+    return Math.abs(this.fAtPoint(Q)) < 1e-5 && this.inSurfaceBounds(Q) ? Q : null
+  }
+
+  /** 开关打开时的初始点：优先镜面反射点 O（必在亮线上）；否则粗采样找零线最近点再精化 */
+  private findInitialGlitterPoint(): THREE.Vector3 | null {
+    const p = this.params
+    // O：镜面反射点（z=0 平面镜反射定律）
+    let O: THREE.Vector3
+    if (p.lightMode === 'point') {
+      const s = p.pointLightPos.z / (p.pointLightPos.z + p.eyePos.z)
+      O = new THREE.Vector3(
+        p.pointLightPos.x + (p.eyePos.x - p.pointLightPos.x) * s,
+        p.pointLightPos.y + (p.eyePos.y - p.pointLightPos.y) * s,
+        0,
+      )
+    } else {
+      const d = this.sunDir(p.azimuth, p.elevation).multiplyScalar(-1)
+      const t = p.eyePos.z / d.z === 0 ? 0 : p.eyePos.z / -d.z
+      O = new THREE.Vector3(p.eyePos.x + d.x * t, p.eyePos.y + d.y * t, 0)
+    }
+    if (this.inSurfaceBounds(O) && Math.abs(this.fAtPoint(O)) < 1e-6) return O
+    // 粗采样：面上网格找 |f| 最小点作为初值
+    const ext = p.surfaceType === 'disk' ? p.diskRadius : Math.max(p.plateWidth, p.plateDepth) / 2
+    let best: THREE.Vector3 | null = null
+    let bestAbs = Infinity
+    const N = 50
+    for (let i = 0; i <= N; i++) {
+      for (let j = 0; j <= N; j++) {
+        const Q = new THREE.Vector3(p.centerX - ext + (2 * ext * i) / N, p.centerY - ext + (2 * ext * j) / N, 0)
+        if (!this.inSurfaceBounds(Q)) continue
+        const a = Math.abs(this.fAtPoint(Q))
+        if (a < bestAbs) {
+          bestAbs = a
+          best = Q
+        }
+      }
+    }
+    if (!best) return null
+    return this.projectToGlitter(best.x, best.y, best)
+  }
+
+  /* ---------------- 亮线分析：逐帧更新（拖点/拖光源/拖眼睛/改参数全在这里汇聚） ---------------- */
+  private updateGlitterPoint() {
+    const p = this.params
+    if (!p.showGlitterPoint) {
+      this.pointGroup.visible = false
+      return
+    }
+    // 参数变化时把点重新投影回新亮线（保持分支连续）；开关刚打开时找初始点
+    const key = [
+      p.lightMode,
+      p.azimuth,
+      p.elevation,
+      p.pointLightPos.x,
+      p.pointLightPos.y,
+      p.pointLightPos.z,
+      p.surfaceType,
+      p.plateWidth,
+      p.plateDepth,
+      p.grooveAngle,
+      p.diskRadius,
+      p.centerX,
+      p.centerY,
+      p.eyePos.x,
+      p.eyePos.y,
+      p.eyePos.z,
+    ].join('|')
+    if (this.pointNeedsInit) {
+      const Q = this.findInitialGlitterPoint()
+      if (Q) {
+        this.pointPos.copy(Q)
+        this.pointNeedsInit = false
+      } else {
+        this.pointGroup.visible = false
+        return // 面上无亮线；保持待初始化，参数变化后再试
+      }
+    } else if (key !== this.pointParamsKey) {
+      const Q = this.projectToGlitter(this.pointPos.x, this.pointPos.y, this.pointPos) ?? this.findInitialGlitterPoint()
+      if (!Q) {
+        this.pointGroup.visible = false
+        return
+      }
+      this.pointPos.copy(Q)
+    }
+    this.pointParamsKey = key
+    this.pointGroup.visible = true
+    if (!(this.tc.dragging && this.tc.object === this.pointHandle)) {
+      this.pointHandle.position.set(this.pointPos.x, this.pointPos.y, GLITTER_Z + 0.02)
+    }
+    const P = new THREE.Vector3(this.pointPos.x, this.pointPos.y, GLITTER_Z + 0.02)
+
+    // p̂：入射传播方向；E：眼睛
+    const E = new THREE.Vector3(p.eyePos.x, p.eyePos.y, p.eyePos.z)
+    const ph =
+      p.lightMode === 'point'
+        ? new THREE.Vector3(P.x - p.pointLightPos.x, P.y - p.pointLightPos.y, P.z - p.pointLightPos.z).normalize()
+        : this.sunDir(p.azimuth, p.elevation).multiplyScalar(-1)
+
+    // 入射光箭头
+    if (p.lightMode === 'point') {
+      this.updateArrow(this.incidentArrow, new THREE.Vector3(p.pointLightPos.x, p.pointLightPos.y, p.pointLightPos.z), P)
+    } else {
+      this.updateArrow(this.incidentArrow, P.clone().addScaledVector(ph, -2.2), P)
+    }
+    // 反射光箭头：P → 眼睛
+    this.updateArrow(this.reflectedArrow, P, E)
+
+    // 半光锥：轴 a = sign(c)·t̂，半角 α = arccos|c|，c = p̂·t̂；亮线条件保证 q̂ 在锥面上
+    let thx = 0
+    let thy = 0
+    if (p.surfaceType === 'plate') {
+      const a = p.grooveAngle * DEG
+      thx = Math.cos(a)
+      thy = Math.sin(a)
+    } else {
+      const rx = P.x - p.centerX
+      const ry = P.y - p.centerY
+      const r = Math.hypot(rx, ry)
+      if (r >= 1e-4) {
+        thx = -ry / r
+        thy = rx / r
+      }
+    }
+    const c = ph.x * thx + ph.y * thy
+    const sgn = c < 0 ? -1 : 1
+    const ax = thx * sgn
+    const ay = thy * sgn
+    const alpha = Math.acos(clamp(Math.abs(c), 0, 1))
+    const cosA = Math.cos(alpha)
+    const sinA = Math.sin(alpha)
+    // 锥面母线基向量：u1 = ẑ（a 水平故垂直），u2 = a × ẑ（水平）
+    const u2x = ay * 1 - 0 // (ax,ay,0) × (0,0,1) = (ay·1−0, 0−ax·1, 0) = (ay, −ax, 0)
+    const u2y = -ax
+    // 锥长：延伸到眼睛（ capped ），眼睛近时锥面恰好扫过眼睛
+    const Lc = clamp(E.distanceTo(P), 0.8, 4)
+    const N = GlitterScene.CONE_RIM_N
+    const conePos = this.coneMesh.geometry.attributes.position as THREE.BufferAttribute
+    conePos.setXYZ(0, P.x, P.y, P.z)
+    const rimAttr = this.coneRim.geometry.attributes.position as THREE.BufferAttribute
+    const genAttr = this.coneGens.geometry.attributes.position as THREE.BufferAttribute
+    const genPhis = [-90, -45, 0, 45, 90]
+    for (let i = 0; i < N; i++) {
+      const phi = -Math.PI / 2 + (Math.PI * i) / (N - 1)
+      const cf = Math.cos(phi)
+      const sf = Math.sin(phi)
+      // g(φ) = a·cosα + sinα·(ẑ·cosφ + u2·sinφ)
+      const gx = ax * cosA + sinA * u2x * sf
+      const gy = ay * cosA + sinA * u2y * sf
+      const gz = sinA * cf
+      const rx = P.x + Lc * gx
+      const ry = P.y + Lc * gy
+      const rz = P.z + Lc * gz
+      conePos.setXYZ(i + 1, rx, ry, rz)
+      rimAttr.setXYZ(i, rx, ry, rz)
+    }
+    for (let k = 0; k < 5; k++) {
+      const phi = (genPhis[k] * Math.PI) / 180
+      const cf = Math.cos(phi)
+      const sf = Math.sin(phi)
+      genAttr.setXYZ(k * 2, P.x, P.y, P.z)
+      genAttr.setXYZ(k * 2 + 1, P.x + Lc * (ax * cosA + sinA * u2x * sf), P.y + Lc * (ay * cosA + sinA * u2y * sf), P.z + Lc * sinA * cf)
+    }
+    conePos.needsUpdate = true
+    rimAttr.needsUpdate = true
+    genAttr.needsUpdate = true
+    this.coneMesh.geometry.computeVertexNormals()
+  }
+
   /* ---------------- 选中与拖动 ---------------- */
   private handlePick = (ev: PointerEvent) => {
     if (this.tc.dragging) return
@@ -629,7 +940,7 @@ export class GlitterScene {
     this.pointer.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1)
     this.raycaster.setFromCamera(this.pointer, this.mainCam)
     this.raycaster.layers.enableAll()
-    const targets: THREE.Object3D[] = [this.pointLightHandle, this.sunHandle, this.eyeHandle, this.plateGroup, this.diskGroup]
+    const targets: THREE.Object3D[] = [this.pointLightHandle, this.sunHandle, this.eyeHandle, this.plateGroup, this.diskGroup, this.pointHandle]
     const hits = this.raycaster.intersectObjects(targets, true)
     let obj: THREE.Object3D | null = null
     for (const h of hits) {
@@ -664,13 +975,17 @@ export class GlitterScene {
     }
   }
 
-  /** 按选中对象裁剪 gizmo 轴：反射面平移只给 XY 箭头（z 锁定）、旋转只给 Z 环（x/y 翻转无意义） */
+  /** 按选中对象裁剪 gizmo 轴：反射面平移只给 XY 箭头（z 锁定）、旋转只给 Z 环（x/y 翻转无意义）；亮点只在面上平移 */
   private applyGizmoAxes(id: string) {
     if (id === 'surface') {
       const rotating = this.transformMode === 'rotate'
       this.tc.showX = !rotating
       this.tc.showY = !rotating
       this.tc.showZ = rotating
+    } else if (id === 'glitterPoint') {
+      this.tc.showX = true
+      this.tc.showY = true
+      this.tc.showZ = false
     } else {
       this.tc.showX = this.tc.showY = this.tc.showZ = true
     }
@@ -701,6 +1016,18 @@ export class GlitterScene {
       obj.rotation.x = 0
       obj.rotation.y = 0
       this.onDragUpdate({ centerX: round(p.x), centerY: round(p.y) })
+    } else if (id === 'glitterPoint') {
+      // 亮点：把拖拽目标投影回亮线（牛顿迭代），点始终钉在亮线上；不写 React 状态（内部状态即可）
+      p.z = GLITTER_Z + 0.02
+      p.x = clamp(p.x, -8, 8)
+      p.y = clamp(p.y, -8, 8)
+      const Q = this.projectToGlitter(p.x, p.y, this.pointPos)
+      if (Q) {
+        this.pointPos.copy(Q)
+        p.set(Q.x, Q.y, GLITTER_Z + 0.02)
+      } else {
+        p.set(this.pointPos.x, this.pointPos.y, GLITTER_Z + 0.02)
+      }
     } else if (id === 'sun') {
       // 拖动中不回拉把手：gizmo 与太阳始终重合，方位角/仰角实时取自当前位置；
       // 松手时才在 dragging-changed 中吸附回球面（此前拖动中吸附会导致 gizmo 与太阳视觉分离）
@@ -784,6 +1111,11 @@ export class GlitterScene {
       this.diskGlitter.geometry = new THREE.CircleGeometry(p.diskRadius, 160)
     }
 
+    // 亮线分析开关：打开（或面上亮线重新出现时）标记找初始点；可见性在 updateGlitterPoint 中逐帧管理
+    if (p.showGlitterPoint && !this.pointGroup.visible) {
+      this.pointNeedsInit = true
+    }
+
     const u = this.glitterMat.uniforms
     u.uLightMode.value = p.lightMode === 'point' ? 1 : 0
     u.uSurfaceType.value = p.surfaceType === 'plate' ? 0 : 1
@@ -862,6 +1194,9 @@ export class GlitterScene {
     // 观察者相机
     this.eyeCam.position.copy(eyePos)
     this.eyeCam.lookAt(center)
+
+    // 亮线分析点（开关打开时逐帧更新锥面/光线；拖点期间位置由 handleObjectChange 维护）
+    this.updateGlitterPoint()
 
     this.render()
   }

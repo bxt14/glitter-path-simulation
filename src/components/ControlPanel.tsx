@@ -4,7 +4,8 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Slider } from '@/components/ui/slider'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
-import { RotateCcw, Sun, Lightbulb, Eye, Square, Disc } from 'lucide-react'
+import { Switch } from '@/components/ui/switch'
+import { RotateCcw, Sun, Lightbulb, Eye, Square, Disc, Sparkles } from 'lucide-react'
 
 interface Props {
   params: SimParams
@@ -149,6 +150,26 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
             ))}
           </div>
         </div>
+      </section>
+
+      <Separator className="bg-[#232a38]" />
+
+      {/* 亮线分析 */}
+      <section className="space-y-3">
+        <SectionTitle>
+          <span className="inline-flex items-center gap-1.5">
+            <Sparkles className="size-3.5" /> 亮线分析
+          </span>
+        </SectionTitle>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-[#9aa5b4]">显示亮线上的一点</span>
+          <Switch checked={p.showGlitterPoint} onCheckedChange={(v) => onChange({ showGlitterPoint: v })} />
+        </div>
+        {p.showGlitterPoint && (
+          <p className="text-[11px] leading-relaxed text-[#66707e]">
+            拖动亮线上的点：同步显示该点的入射光、沟槽反射半光锥（锥面扫过眼睛）与射向眼睛的反射光。
+          </p>
+        )}
       </section>
 
       <Separator className="bg-[#232a38]" />

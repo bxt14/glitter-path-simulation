@@ -28,6 +28,8 @@ export interface SimParams {
   /** 反射面中心（XY 平面，z 恒为 0） */
   centerX: number
   centerY: number
+  /** 亮线分析：显示亮线上的可拖动点 + 入射光/沟槽半光锥/反射光 */
+  showGlitterPoint: boolean
 }
 
 export const DEFAULT_PARAMS: SimParams = {
@@ -46,6 +48,7 @@ export const DEFAULT_PARAMS: SimParams = {
   focalLength: 50,
   centerX: 0,
   centerY: 0,
+  showGlitterPoint: false,
 }
 
 export interface Preset {

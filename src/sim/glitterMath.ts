@@ -52,6 +52,7 @@ export function fAt(p: SimParams, qx: number, qy: number, qz = 0): number {
 
 /** Q 是否落在反射面范围内（板按沟槽角旋转后的局部矩形判定） */
 export function inSurfaceBounds(p: SimParams, qx: number, qy: number): boolean {
+  if (p.infiniteSurface) return true
   const dx = qx - p.centerX
   const dy = qy - p.centerY
   if (p.surfaceType === 'disk') return Math.hypot(dx, dy) <= p.diskRadius + 1e-6
@@ -122,7 +123,7 @@ export function findInitialGlitterPoint(p: SimParams, out: { x: number; y: numbe
     return true
   }
   // 粗采样：面上网格找 |f| 最小点作为初值
-  const ext = p.surfaceType === 'disk' ? p.diskRadius : Math.max(p.plateWidth, p.plateDepth) / 2
+  const ext = p.infiniteSurface ? 8 : p.surfaceType === 'disk' ? p.diskRadius : Math.max(p.plateWidth, p.plateDepth) / 2
   let bestX = 0
   let bestY = 0
   let bestAbs = Infinity

@@ -32,6 +32,8 @@ export interface SimParams {
   showGlitterPoint: boolean
   /** 亮线分析（仅平行光+拉丝板）：显示由光路可逆从眼睛发出的圆锥，其与板面交线即亮线 */
   showEyeCone: boolean
+  /** 反射面视为无穷大平面：整条亮线完整显示，尺寸参数暂时不生效 */
+  infiniteSurface: boolean
 }
 
 export const DEFAULT_PARAMS: SimParams = {
@@ -52,6 +54,7 @@ export const DEFAULT_PARAMS: SimParams = {
   centerY: 0,
   showGlitterPoint: false,
   showEyeCone: false,
+  infiniteSurface: false,
 }
 
 /** 深拷贝参数（嵌套 Vec3 不共享引用，防止预设/DEFAULT_PARAMS 之间串数据） */

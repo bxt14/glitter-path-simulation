@@ -670,6 +670,7 @@ export class GlitterScene {
 
   /* ---------------- 亮线分析：构建 ---------------- */
   private static CONE_RIM_N = 33 // 半光锥母线弧采样点数（φ ∈ [−90°, 90°]，z≥0 半锥）
+  private static INF_SIZE = 24 // 无穷大反射面的近似边长（覆盖整个可视场景）
 
   /** 小箭头：线段 + 锥形箭头头，可整体更新起终点 */
   private makeArrow(color: number): THREE.Group {
@@ -1135,17 +1136,20 @@ export class GlitterScene {
     this.eyeCam.updateProjectionMatrix()
 
     // 几何尺寸重建（dispose 旧 geometry）；glitter 面默认即在 XY 平面、法线 +z
-    const key = `${p.plateWidth}|${p.plateDepth}|${p.diskRadius}`
+    const key = `${p.plateWidth}|${p.plateDepth}|${p.diskRadius}|${p.infiniteSurface}`
     if (key !== this.geoKey) {
       this.geoKey = key
+      const W = p.infiniteSurface ? GlitterScene.INF_SIZE : p.plateWidth
+      const D = p.infiniteSurface ? GlitterScene.INF_SIZE : p.plateDepth
+      const R = p.infiniteSurface ? GlitterScene.INF_SIZE / 2 : p.diskRadius
       this.plateBase.geometry.dispose()
-      this.plateBase.geometry = new THREE.BoxGeometry(p.plateWidth, p.plateDepth, SURFACE_THICK)
+      this.plateBase.geometry = new THREE.BoxGeometry(W, D, SURFACE_THICK)
       this.plateGlitter.geometry.dispose()
-      this.plateGlitter.geometry = new THREE.PlaneGeometry(p.plateWidth, p.plateDepth)
+      this.plateGlitter.geometry = new THREE.PlaneGeometry(W, D)
       this.diskBase.geometry.dispose()
-      this.diskBase.geometry = new THREE.CylinderGeometry(p.diskRadius, p.diskRadius, SURFACE_THICK, 128).rotateX(Math.PI / 2)
+      this.diskBase.geometry = new THREE.CylinderGeometry(R, R, SURFACE_THICK, 128).rotateX(Math.PI / 2)
       this.diskGlitter.geometry.dispose()
-      this.diskGlitter.geometry = new THREE.CircleGeometry(p.diskRadius, 160)
+      this.diskGlitter.geometry = new THREE.CircleGeometry(R, 160)
     }
 
     // 亮线分析开关：打开（或面上亮线重新出现时）标记找初始点；可见性在 updateGlitterPoint 中逐帧管理
@@ -1187,10 +1191,16 @@ export class GlitterScene {
     u.uTime.value = t
 
     // 坐标轴 tripod 跟随反射面平移（不随板旋转）：置于反射面边界外 -y 方向
-    const halfExtent = p.surfaceType === 'plate' ? Math.max(p.plateWidth, p.plateDepth) / 2 : p.diskRadius
+    const halfExtent = p.infiniteSurface
+      ? GlitterScene.INF_SIZE / 2
+      : p.surfaceType === 'plate'
+        ? Math.max(p.plateWidth, p.plateDepth) / 2
+        : p.diskRadius
     this.tripod.position.set(center.x, center.y - halfExtent - TRIPOD_GAP, 0)
+    this.tripod.visible = !p.infiniteSurface // 无穷大模式下边界无意义，藏起 tripod
 
-    // 接触阴影跟随反射面（略大于轮廓，板用椭圆比例、盘用圆形）
+    // 接触阴影跟随反射面（略大于轮廓，板用椭圆比例、盘用圆形）；无穷大模式无边界，隐藏
+    this.contactShadow.visible = !p.infiniteSurface
     if (p.surfaceType === 'plate') {
       this.contactShadow.scale.set(p.plateWidth * 1.35, p.plateDepth * 1.35, 1)
     } else {

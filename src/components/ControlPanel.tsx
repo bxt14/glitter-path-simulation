@@ -87,6 +87,18 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
             <SliderRow label="光源 Z（高度）" value={p.pointLightPos.z} min={0.15} max={8} step={0.05} onChange={(v) => onChange({ pointLightPos: { ...p.pointLightPos, z: v } })} />
           </div>
         )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full border-[#2a3344] bg-[#151b28] text-xs text-[#c8d0dc] hover:bg-[#1c2434] hover:text-[#f0d9b0]"
+          onClick={() =>
+            p.lightMode === 'parallel'
+              ? onChange({ azimuth: 90 }) // 平行光：方位角 90° → 传播方向在 YZ 平面内 +Y→−Y
+              : onChange({ pointLightPos: { x: 0, y: 4, z: p.pointLightPos.z } }) // 点光源：摆到 YZ 平面内 +Y 一侧
+          }
+        >
+          光线来自 +Y（YZ 平面内射向 −Y）
+        </Button>
       </section>
 
       <Separator className="bg-[#232a38]" />
@@ -116,6 +128,17 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
         <p className="font-mono text-[11px] text-[#66707e]">
           板心 C = ({p.centerX.toFixed(2)}, {p.centerY.toFixed(2)}, 0) · 可拖动面板移动
         </p>
+        <div className="flex items-center justify-between">
+          <label htmlFor="sw-infinite" className="cursor-pointer text-xs text-[#9aa5b4]">
+            无穷大反射面
+          </label>
+          <Switch id="sw-infinite" checked={p.infiniteSurface} onCheckedChange={(v) => onChange({ infiniteSurface: v })} />
+        </div>
+        {p.infiniteSurface && (
+          <p className="text-[11px] leading-relaxed text-[#66707e]">
+            反射面视为无限大平面（沟槽遍布全平面），整条反射亮线完整显示；尺寸滑块暂时不生效。
+          </p>
+        )}
       </section>
 
       <Separator className="bg-[#232a38]" />

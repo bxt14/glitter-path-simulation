@@ -79,11 +79,11 @@ function buildCones(
 
 export default function ConeFieldViz() {
   const [lightMode, setLightMode] = useState<'parallel' | 'point'>('parallel')
-  const [azimuth, setAzimuth] = useState(95)
+  const [azimuth, setAzimuth] = useState(180) // 默认光从左侧射入（+X 方向）
   const [elevation, setElevation] = useState(45)
-  const [lightPos, setLightPos] = useState({ x: 1.6, y: 1.2, z: 2.6 })
+  const [lightPos, setLightPos] = useState({ x: -2.0, y: 0, z: 2.4 }) // 默认在左侧
   const [surface, setSurface] = useState<'plate' | 'disk'>('plate')
-  const [grooveAngle, setGrooveAngle] = useState(90)
+  const [grooveAngle, setGrooveAngle] = useState(0) // 默认 t̂ 沿 +X，配合左侧来光 → 锥口朝右
   const [density, setDensity] = useState(4)
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -123,9 +123,10 @@ export default function ConeFieldViz() {
     const scene = new THREE.Scene()
     scene.background = new THREE.Color(0x0b0e13)
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
-    camera.position.set(3.6, -4.4, 3.4)
+    camera.up.set(0, 0, 1)
+    camera.position.set(0.6, -6.2, 2.6) // 正面略俯视：反射面水平、左→右构图
     const controls = new OrbitControls(camera, renderer.domElement)
-    controls.target.set(0, 0, 0.4)
+    controls.target.set(0, 0, 0.35)
     controls.enableDamping = true
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.55))

@@ -46,7 +46,7 @@ function traceRay(xc: number, iDeg: number, center = false): RayPath {
 
   for (let k = 0; k < MAX_BOUNCE; k++) {
     let bestT = Infinity
-    let bestKind: 'arc' | 'flat' | null = null
+    let bestKind: 'arc' | 'flat' | 'exit' | null = null
     // 与槽壁圆（下半圆，y ≤ 0）求交
     const b = 2 * dot(p, d)
     const c = dot(p, p) - R * R
@@ -59,27 +59,33 @@ function traceRay(xc: number, iDeg: number, center = false): RayPath {
         }
       }
     }
-    // 与平坦表面 y=0（|x|>R）求交
+    // 与表面平面 y=0 求交：向上穿越 = 出射；向下且 |x|>R = 平坦表面反射；向下且 |x|≤R = 进槽口（不算事件）
     if (Math.abs(d.y) > 1e-9) {
       const t = -p.y / d.y
       if (t > 1e-6 && t < bestT) {
         const q = add(p, mul(d, t))
-        if (Math.abs(q.x) > R) { bestT = t; bestKind = 'flat' }
+        if (d.y > 0 && p.y < 0) { bestT = t; bestKind = 'exit' }       // 从槽内向上离开
+        else if (d.y < 0 && Math.abs(q.x) > R) { bestT = t; bestKind = 'flat' } // 打在平坦表面
+        // d.y<0 且 |x|≤R：穿过槽口进入，不是事件
       }
     }
-    if (bestKind === null) { exit = d; break }
+    if (bestKind === null) { // 不再与任何面相交：若向上运动则画出射段
+      if (d.y > 1e-6) pts.push(add(p, mul(d, 2.4)))
+      exit = d
+      break
+    }
 
     const q = add(p, mul(d, bestT))
     pts.push(q)
+    if (bestKind === 'exit') { // 从槽口/表面平面向上离开
+      pts.push(add(q, mul(d, 2.4)))
+      exit = d
+      break
+    }
     bounces.push({ p: q, kind: bestKind })
     const n = bestKind === 'arc' ? mul(q, -1 / len(q)) : v(0, 1) // 弧面法线指向圆心
     d = sub(d, mul(n, 2 * dot(d, n)))
     p = add(q, mul(d, 1e-6))
-    if (d.y > 1e-6) { // 向上运动，必然离开沟槽
-      pts.push(add(p, mul(d, 3)))
-      exit = d
-      break
-    }
   }
   return { pts, exit, bounces, center }
 }
@@ -219,33 +225,34 @@ export default function GrooveMicro() {
 
       // ---------- 出射锥面轮廓 ----------
       if (showCone && cone) {
-        const apex = toScreen(v(0, -R))
-        const L = 3.2 * s
-        const a1 = toScreen(v(3.2 * Math.sin(cone.min), -R + 3.2 * Math.cos(cone.min)))
-        const a2 = toScreen(v(3.2 * Math.sin(cone.max), -R + 3.2 * Math.cos(cone.max)))
+        // 槽口中心为顶点的角度规：一条横跨 min..max 出射角的弧 + 两条短虚线边界
+        const apexW = v(0, 0)
+        const apex = toScreen(apexW)
+        const RL = 0.85 * R
+        const rr = RL * s
+        const p1 = toScreen(add(apexW, v(RL * Math.sin(cone.min), RL * Math.cos(cone.min))))
+        const p2 = toScreen(add(apexW, v(RL * Math.sin(cone.max), RL * Math.cos(cone.max))))
         ctx.save()
-        ctx.beginPath()
-        ctx.moveTo(apex.x, apex.y)
-        ctx.lineTo(apex.x + (a1.x - apex.x), apex.y + (a1.y - apex.y))
-        ctx.lineTo(apex.x + (a2.x - apex.x), apex.y + (a2.y - apex.y))
-        ctx.closePath()
-        ctx.fillStyle = 'rgba(143,208,255,0.07)'
-        ctx.fill()
-        ctx.setLineDash([6, 5])
-        ctx.strokeStyle = 'rgba(143,208,255,0.45)'
-        ctx.lineWidth = 1.5
-        ctx.beginPath(); ctx.moveTo(apex.x, apex.y); ctx.lineTo(a1.x, a1.y); ctx.stroke()
-        ctx.beginPath(); ctx.moveTo(apex.x, apex.y); ctx.lineTo(a2.x, a2.y); ctx.stroke()
+        ctx.setLineDash([5, 5])
+        ctx.strokeStyle = 'rgba(143,208,255,0.55)'
+        ctx.lineWidth = 1.4
+        ctx.beginPath(); ctx.moveTo(apex.x, apex.y); ctx.lineTo(p1.x, p1.y); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(apex.x, apex.y); ctx.lineTo(p2.x, p2.y); ctx.stroke()
         ctx.setLineDash([])
-        // 标注
+        // 出射角范围弧（屏幕坐标角 = 世界角 - π/2）
+        ctx.strokeStyle = 'rgba(143,208,255,0.85)'
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.arc(apex.x, apex.y, rr, cone.min - Math.PI / 2, cone.max - Math.PI / 2, false)
+        ctx.stroke()
+        // 标注放在弧顶上方
         const mid = (cone.min + cone.max) / 2
-        const lp = toScreen(v(2.55 * Math.sin(mid), -R + 2.55 * Math.cos(mid)))
-        ctx.font = `12px ui-sans-serif, system-ui`
-        ctx.fillStyle = 'rgba(143,208,255,0.85)'
+        const lp = toScreen(add(apexW, v((RL + 0.32) * Math.sin(mid), (RL + 0.32) * Math.cos(mid))))
+        ctx.font = '12px ui-sans-serif, system-ui'
+        ctx.fillStyle = 'rgba(143,208,255,0.95)'
         ctx.textAlign = 'center'
-        ctx.fillText('出射光锥', lp.x, lp.y)
+        ctx.fillText('出射光锥', lp.x, lp.y - 4)
         ctx.restore()
-        void L
       }
 
       // ---------- 光路 ----------
@@ -325,10 +332,10 @@ export default function GrooveMicro() {
         ctx.restore()
       })
 
-      // ---------- 入射角标注（左上角小图） ----------
+      // ---------- 入射角标注（右上角小图，避开左上角标题卡） ----------
       {
-        const gx = 56
-        const gy = 52
+        const gx = w - 96
+        const gy = 56
         const L = 34
         const iRad = (angleI * Math.PI) / 180
         ctx.save()
@@ -402,7 +409,7 @@ export default function GrooveMicro() {
 
       {/* 说明条 */}
       <div className="border-t border-[#232a38] bg-[#11151d] px-4 py-2.5 text-[11px] leading-relaxed text-[#8b95a5] md:text-xs">
-        <span className="text-[#f0d9b0]">①</span> 射到槽底中心的光线沿正常（镜面）方向原路返回（高亮金色）&ensp;
+        <span className="text-[#f0d9b0]">①</span> 射到槽底中心的光线沿正常（镜面）方向原路返回{angleI <= 45 ? '（图中高亮金色）' : '（当前 i>45°，槽底中心被槽沿遮挡）'}&ensp;
         <span className="text-[#f0d9b0]">②</span> 射到左半槽壁的光被反射到右侧，右半槽壁的光被反射到左侧，彼此交叉&ensp;
         <span className="text-[#f0d9b0]">③</span> 全部出射光的方向大致张成一个锥面（蓝色轮廓）——宏观亮线的微观来源
       </div>

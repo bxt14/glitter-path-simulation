@@ -21,7 +21,7 @@ const R = 1
 const REF_Y = 0.2
 const START_Y = 2.3
 const MAX_BOUNCE = 4
-const PIPE_LEN = 6 // 槽长（Y 方向）
+const PIPE_LEN = 5 // 槽长（Y 方向）
 
 interface V2 { x: number; y: number }
 interface Bounce { p: V2; kind: 'arc' | 'flat' }
@@ -73,14 +73,14 @@ function traceRay(xc: number, iDeg: number, center = false): RayPath {
       }
     }
     if (bestKind === null) {
-      if (d.y > 1e-6) pts.push(add(p, mul(d, 2.4)))
+      if (d.y > 1e-6) pts.push(add(p, mul(d, 1.7)))
       exit = d
       break
     }
     const q = add(p, mul(d, bestT))
     pts.push(q)
     if (bestKind === 'exit') {
-      pts.push(add(q, mul(d, 2.4)))
+      pts.push(add(q, mul(d, 1.7)))
       exit = d
       break
     }
@@ -153,12 +153,12 @@ export default function GrooveMicro() {
     scene.background = new THREE.Color(0x0b0e13)
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100)
     camera.up.set(0, 0, 1)
-    camera.position.set(3.4, -4.6, 2.4)
+    camera.position.set(1.2, -5.6, 2.5)
     const controls = new OrbitControls(camera, renderer.domElement)
-    controls.target.set(0, 0, -0.1)
+    controls.target.set(0, 0.1, -0.1)
     controls.enableDamping = true
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5))
+    scene.add(new THREE.AmbientLight(0xffffff, 0.62))
     const key = new THREE.DirectionalLight(0xfff2dd, 1.5)
     key.position.set(2, -3, 5)
     scene.add(key)
@@ -178,12 +178,20 @@ export default function GrooveMicro() {
     scene.add(pipe)
 
     // ---- 两侧平坦表面（z=0 平面，|x|>R）----
-    const flatMat = new THREE.MeshStandardMaterial({ color: 0x767f8c, metalness: 0.85, roughness: 0.4 })
+    const flatMat = new THREE.MeshStandardMaterial({ color: 0x596270, metalness: 0.85, roughness: 0.42 })
     for (const sgn of [-1, 1]) {
-      const strip = new THREE.Mesh(new THREE.BoxGeometry(2.2, PIPE_LEN, 0.06), flatMat)
-      strip.position.set(sgn * (R + 1.1), 0, -0.03)
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(2.2, PIPE_LEN, 1.35), flatMat)
+      strip.position.set(sgn * (R + 1.1), 0, -0.675)
       scene.add(strip)
     }
+    // 槽底托板，封住半管底部的悬空感
+    const belly = new THREE.Mesh(new THREE.BoxGeometry(2.02, PIPE_LEN, 0.38), flatMat)
+    belly.position.set(0, 0, -1.19)
+    scene.add(belly)
+    // 槽腔内柔和补光，让交叉反射光路可读
+    const fill = new THREE.PointLight(0xfff2dd, 12, 7, 1.6)
+    fill.position.set(0.3, -0.6, 1.4)
+    scene.add(fill)
     // 槽口两端封口（可有可无的视觉细节：端面圆环省略，保持开放感）
 
     // 地面参考网格
@@ -198,8 +206,18 @@ export default function GrooveMicro() {
     // 光子（每光线一个，Points 逐帧更新位置）
     const photonGeo = new THREE.BufferGeometry()
     photonGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * 64), 3))
+    // 圆形发光贴图，避免方形点
+    const pc = document.createElement('canvas')
+    pc.width = pc.height = 64
+    const pctx = pc.getContext('2d')!
+    const grad = pctx.createRadialGradient(32, 32, 0, 32, 32, 32)
+    grad.addColorStop(0, 'rgba(255,244,214,1)')
+    grad.addColorStop(0.35, 'rgba(245,200,110,0.8)')
+    grad.addColorStop(1, 'rgba(0,0,0,0)')
+    pctx.fillStyle = grad
+    pctx.fillRect(0, 0, 64, 64)
     const photonMat = new THREE.PointsMaterial({
-      color: 0xfff3d0, size: 0.09, sizeAttenuation: true,
+      map: new THREE.CanvasTexture(pc), color: 0xffffff, size: 0.14, sizeAttenuation: true,
       transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
     })
     const photons = new THREE.Points(photonGeo, photonMat)
@@ -287,12 +305,12 @@ export default function GrooveMicro() {
     }
 
     // 两侧淡化平行光幕（体现三维平移对称性）
-    for (const wy of [-1.1, 1.1]) {
+    for (const wy of [-1.5, 1.5]) {
       for (const ray of rays) {
         if (ray.center) continue
         const p3 = ray.pts.map((p) => to3(p))
-        addLines([p3.slice(0, 2)], COL_INCIDENT, 0.14, wy)
-        if (p3.length > 2) addLines([p3.slice(1)], COL_REFLECT, 0.16, wy)
+        addLines([p3.slice(0, 2)], COL_INCIDENT, 0.07, wy)
+        if (p3.length > 2) addLines([p3.slice(1)], COL_REFLECT, 0.08, wy)
       }
     }
 

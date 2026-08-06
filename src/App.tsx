@@ -4,13 +4,14 @@ import { DEFAULT_PARAMS, cloneParams } from '@/sim/types'
 import type { DragUpdate, GlitterScene } from '@/sim/glitterScene'
 import GlitterCanvas from '@/components/GlitterCanvas'
 import GrooveMicro from '@/components/GrooveMicro'
+import ConeFieldViz from '@/components/ConeFieldViz'
 import ControlPanel from '@/components/ControlPanel'
 import InfoPanel from '@/components/InfoPanel'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { Move, RotateCw, SlidersHorizontal, X } from 'lucide-react'
 
 export default function App() {
-  const [tab, setTab] = useState<'glitter' | 'micro'>('glitter')
+  const [tab, setTab] = useState<'glitter' | 'micro' | 'cones'>('glitter')
   const [params, setParams] = useState<SimParams>(DEFAULT_PARAMS)
   const [panelOpen, setPanelOpen] = useState(false)
   const [selection, setSelection] = useState<string | null>(null)
@@ -56,7 +57,7 @@ export default function App() {
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-[#0b0e13] text-[#c9d1d9]">
       {/* 页面最顶上：功能标签栏 */}
       <div className="flex h-11 shrink-0 items-center justify-center gap-1 border-b border-[#232a38] bg-[#0e1219] px-3">
-        {([['micro', '沟槽微观机理'], ['glitter', '反射亮线模拟']] as const).map(([key, label]) => (
+        {([['micro', '沟槽微观机理'], ['cones', '光锥可视化'], ['glitter', '反射亮线模拟']] as const).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -72,6 +73,10 @@ export default function App() {
       {tab === 'micro' ? (
         <main className="min-h-0 flex-1">
           <GrooveMicro />
+        </main>
+      ) : tab === 'cones' ? (
+        <main className="min-h-0 flex-1">
+          <ConeFieldViz />
         </main>
       ) : (
       <div className="flex min-h-0 flex-1">

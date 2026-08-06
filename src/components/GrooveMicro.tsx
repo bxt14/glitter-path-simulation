@@ -1,30 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import * as THREE from 'three'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { Pause, Play } from 'lucide-react'
 
 /**
- * 沟槽微观机理示意（2D 剖面）
- * 半圆形沟槽 + 一组以入射角 i 入射的平行光，槽壁上做真实镜面反射追踪（含多次反射，上限 4 次）。
- * 物理约定（已用 numpy 独立验证）：
- *  - 光线按「与 y=0.2R 参考线的交点」均匀采样，避免倾斜时错过槽口；
- *  - 穿过槽底中心 (0,-R) 的光线仅当 i ≤ 45° 时存在（xc0 = -(R+0.2R)·tan i），它沿镜面方向返回；
- *  - 左半槽壁的反射光射向右侧、右半射向左侧（多次交叉反射）；
- *  - 出射锥面轮廓由实际追踪到的出射方向 min/max 角绘制，不使用未经验证的解析公式。
+ * 沟槽微观机理示意（3D：U 形半管槽，如自行车场地/滑板 U 池的剖面）
+ * 槽为半圆柱面（轴沿 Y，截面是 X-Z 平面内的半圆，开口朝 +Z）。
+ * 一组平行光以入射角 i 在 y=0 剖面内射入，在槽壁上做真实镜面反射追踪（含多次反射，上限 4 次）。
+ * 物理与 2D 版完全相同（numpy 验证过）：
+ *  - 光线按「与 z=0.2R 参考线的交点」均匀采样；
+ *  - 穿过槽底中心 (0,-R) 的光线仅当 i ≤ 45° 时存在（xc0 = −(R+0.2R)·tan i），沿镜面方向返回；
+ *  - 左半槽壁反射到右侧、右半反射到左侧（交叉反射）；
+ *  - 出射方向大致张成扇形（三维中沿槽轴平移成光幕）；出射角范围由实际追踪结果绘制。
+ * 2D (x, y) → 3D (x, 0, y)：y2d 是竖直方向 = z3d。
  */
 
 const R = 1
 const REF_Y = 0.2
 const START_Y = 2.3
 const MAX_BOUNCE = 4
+const PIPE_LEN = 6 // 槽长（Y 方向）
 
 interface V2 { x: number; y: number }
 interface Bounce { p: V2; kind: 'arc' | 'flat' }
 interface RayPath {
-  pts: V2[]            // 折线顶点（起点 → 各命中点 → 出射末端）
-  exit: V2 | null      // 出射方向（向上离开时有值）
+  pts: V2[]
+  exit: V2 | null
   bounces: Bounce[]
-  center: boolean      // 是否穿过槽底中心的高亮光线
+  center: boolean
 }
 
 const v = (x: number, y: number): V2 => ({ x, y })
@@ -33,8 +38,9 @@ const add = (a: V2, b: V2): V2 => v(a.x + b.x, a.y + b.y)
 const mul = (a: V2, s: number): V2 => v(a.x * s, a.y * s)
 const dot = (a: V2, b: V2): number => a.x * b.x + a.y * b.y
 const len = (a: V2): number => Math.hypot(a.x, a.y)
+const to3 = (p: V2, y = 0): THREE.Vector3 => new THREE.Vector3(p.x, y, p.y)
 
-/** 追踪一条光线：xc 为与 y=REF_Y 参考线交点的 x 坐标 */
+/** 追踪一条光线（2D 剖面）：xc 为与 z=REF_Y 参考线交点的 x 坐标 */
 function traceRay(xc: number, iDeg: number, center = false): RayPath {
   const i = (iDeg * Math.PI) / 180
   let d = v(Math.sin(i), -Math.cos(i))
@@ -47,7 +53,6 @@ function traceRay(xc: number, iDeg: number, center = false): RayPath {
   for (let k = 0; k < MAX_BOUNCE; k++) {
     let bestT = Infinity
     let bestKind: 'arc' | 'flat' | 'exit' | null = null
-    // 与槽壁圆（下半圆，y ≤ 0）求交
     const b = 2 * dot(p, d)
     const c = dot(p, p) - R * R
     const disc = b * b - 4 * c
@@ -59,48 +64,37 @@ function traceRay(xc: number, iDeg: number, center = false): RayPath {
         }
       }
     }
-    // 与表面平面 y=0 求交：向上穿越 = 出射；向下且 |x|>R = 平坦表面反射；向下且 |x|≤R = 进槽口（不算事件）
     if (Math.abs(d.y) > 1e-9) {
       const t = -p.y / d.y
       if (t > 1e-6 && t < bestT) {
         const q = add(p, mul(d, t))
-        if (d.y > 0 && p.y < 0) { bestT = t; bestKind = 'exit' }       // 从槽内向上离开
-        else if (d.y < 0 && Math.abs(q.x) > R) { bestT = t; bestKind = 'flat' } // 打在平坦表面
-        // d.y<0 且 |x|≤R：穿过槽口进入，不是事件
+        if (d.y > 0 && p.y < 0) { bestT = t; bestKind = 'exit' }
+        else if (d.y < 0 && Math.abs(q.x) > R) { bestT = t; bestKind = 'flat' }
       }
     }
-    if (bestKind === null) { // 不再与任何面相交：若向上运动则画出射段
+    if (bestKind === null) {
       if (d.y > 1e-6) pts.push(add(p, mul(d, 2.4)))
       exit = d
       break
     }
-
     const q = add(p, mul(d, bestT))
     pts.push(q)
-    if (bestKind === 'exit') { // 从槽口/表面平面向上离开
+    if (bestKind === 'exit') {
       pts.push(add(q, mul(d, 2.4)))
       exit = d
       break
     }
     bounces.push({ p: q, kind: bestKind })
-    const n = bestKind === 'arc' ? mul(q, -1 / len(q)) : v(0, 1) // 弧面法线指向圆心
+    const n = bestKind === 'arc' ? mul(q, -1 / len(q)) : v(0, 1)
     d = sub(d, mul(n, 2 * dot(d, n)))
     p = add(q, mul(d, 1e-6))
   }
   return { pts, exit, bounces, center }
 }
 
-/** 光子沿折线定位：s 为弧长坐标，返回位置与切向 */
-function pointAlong(pts: V2[], cum: number[], s: number): { pos: V2; seg: number } {
-  let seg = 0
-  while (seg < cum.length - 2 && cum[seg + 1] < s) seg++
-  const t = cum[seg + 1] === cum[seg] ? 0 : (s - cum[seg]) / (cum[seg + 1] - cum[seg])
-  return { pos: add(pts[seg], mul(sub(pts[seg + 1], pts[seg]), Math.min(Math.max(t, 0), 1))), seg }
-}
-
-const COL_INCIDENT = '#f5c667'   // 入射光（暖金）
-const COL_REFLECT = '#8fd0ff'    // 反射/出射光（浅蓝）
-const COL_CENTER = '#ffe9b0'     // 槽底中心高亮光
+const COL_INCIDENT = 0xf5c667
+const COL_REFLECT = 0x8fd0ff
+const COL_CENTER = 0xffe9b0
 
 export default function GrooveMicro() {
   const [angleI, setAngleI] = useState(40)
@@ -110,12 +104,19 @@ export default function GrooveMicro() {
   const [playing, setPlaying] = useState(true)
 
   const wrapRef = useRef<HTMLDivElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const coneLabelRef = useRef<HTMLDivElement>(null)
+  const sceneRef = useRef<{
+    renderer: THREE.WebGLRenderer
+    camera: THREE.PerspectiveCamera
+    rayGroup: THREE.Group
+    photons: THREE.Points
+    photonMat: THREE.PointsMaterial
+  } | null>(null)
   const timeRef = useRef(0)
   const playingRef = useRef(playing)
   playingRef.current = playing
 
-  // 光线束：均匀采样 + 一条穿过槽底中心的高亮光（i ≤ 45° 时才存在）
+  // 光线束（2D 剖面追踪）
   const rays = useMemo(() => {
     const list: RayPath[] = []
     for (let k = 0; k < rayCount; k++) {
@@ -125,7 +126,6 @@ export default function GrooveMicro() {
     if (angleI <= 45) {
       const xc0 = -(R + REF_Y) * Math.tan((angleI * Math.PI) / 180)
       const cr = traceRay(xc0, angleI, true)
-      // 物理自检：槽底中心光的首个命中点应贴近 (0,-R)，出射方向应等于镜面反射方向 +i
       const first = cr.bounces[0]?.p
       const ok = first && Math.hypot(first.x, first.y + R) < 1e-6 &&
         cr.exit && Math.abs(Math.atan2(cr.exit.x, cr.exit.y) - (angleI * Math.PI) / 180) < 1e-6
@@ -135,240 +135,237 @@ export default function GrooveMicro() {
     return list
   }, [angleI, rayCount])
 
-  // 出射锥面轮廓：实际出射方向的 min/max 角
   const cone = useMemo(() => {
     const angs = rays.filter((r) => r.exit && r.exit.y > 0).map((r) => Math.atan2(r.exit!.x, r.exit!.y))
     if (angs.length < 2) return null
     return { min: Math.min(...angs), max: Math.max(...angs) }
   }, [rays])
 
+  // ---------- three 场景（一次初始化） ----------
   useEffect(() => {
     const wrap = wrapRef.current
-    const canvas = canvasRef.current
-    if (!wrap || !canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
+    if (!wrap) return
+    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    wrap.appendChild(renderer.domElement)
 
-    let w = 0
-    let h = 0
+    const scene = new THREE.Scene()
+    scene.background = new THREE.Color(0x0b0e13)
+    const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100)
+    camera.up.set(0, 0, 1)
+    camera.position.set(3.4, -4.6, 2.4)
+    const controls = new OrbitControls(camera, renderer.domElement)
+    controls.target.set(0, 0, -0.1)
+    controls.enableDamping = true
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5))
+    const key = new THREE.DirectionalLight(0xfff2dd, 1.5)
+    key.position.set(2, -3, 5)
+    scene.add(key)
+    const rim = new THREE.DirectionalLight(0x9cc2f0, 0.7)
+    rim.position.set(-3, 2, 2)
+    scene.add(rim)
+
+    // ---- U 形半管槽体（半圆柱，轴沿 Y，开口朝 +Z）----
+    const pipeMat = new THREE.MeshStandardMaterial({
+      color: 0x8b95a2, metalness: 0.9, roughness: 0.32, side: THREE.DoubleSide,
+    })
+    // CylinderGeometry 顶点：x=R·sinθ, z=R·cosθ；θ∈(π/2, 3π/2) → z≤0 下半圆
+    const pipe = new THREE.Mesh(
+      new THREE.CylinderGeometry(R, R, PIPE_LEN, 128, 1, true, Math.PI / 2, Math.PI),
+      pipeMat,
+    )
+    scene.add(pipe)
+
+    // ---- 两侧平坦表面（z=0 平面，|x|>R）----
+    const flatMat = new THREE.MeshStandardMaterial({ color: 0x767f8c, metalness: 0.85, roughness: 0.4 })
+    for (const sgn of [-1, 1]) {
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(2.2, PIPE_LEN, 0.06), flatMat)
+      strip.position.set(sgn * (R + 1.1), 0, -0.03)
+      scene.add(strip)
+    }
+    // 槽口两端封口（可有可无的视觉细节：端面圆环省略，保持开放感）
+
+    // 地面参考网格
+    const grid = new THREE.GridHelper(14, 28, 0x1c2430, 0x121821)
+    grid.rotation.x = Math.PI / 2
+    grid.position.z = -1.35
+    scene.add(grid)
+
+    const rayGroup = new THREE.Group()
+    scene.add(rayGroup)
+
+    // 光子（每光线一个，Points 逐帧更新位置）
+    const photonGeo = new THREE.BufferGeometry()
+    photonGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * 64), 3))
+    const photonMat = new THREE.PointsMaterial({
+      color: 0xfff3d0, size: 0.09, sizeAttenuation: true,
+      transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
+    })
+    const photons = new THREE.Points(photonGeo, photonMat)
+    photons.frustumCulled = false
+    scene.add(photons)
+
+    sceneRef.current = { renderer, camera, rayGroup, photons, photonMat }
+
     const resize = () => {
-      const rect = wrap.getBoundingClientRect()
-      const dpr = Math.min(window.devicePixelRatio || 1, 2)
-      w = rect.width
-      h = rect.height
-      canvas.width = Math.max(1, Math.round(w * dpr))
-      canvas.height = Math.max(1, Math.round(h * dpr))
-      canvas.style.width = `${w}px`
-      canvas.style.height = `${h}px`
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      const r = wrap.getBoundingClientRect()
+      renderer.setSize(r.width, r.height)
+      camera.aspect = r.width / Math.max(r.height, 1)
+      camera.updateProjectionMatrix()
     }
     resize()
     const ro = new ResizeObserver(resize)
     ro.observe(wrap)
 
-    // 世界坐标：x∈[-2.2,2.2]，y∈[-1.55,1.75]，y 轴向上
-    const toScreen = (p: V2): V2 => {
-      const s = Math.min(w / 4.6, h / 3.5)
-      return v(w / 2 + p.x * s, h * 0.56 - p.y * s)
-    }
-    const scale = (): number => Math.min(w / 4.6, h / 3.5)
-
     let raf = 0
     let last = performance.now()
-
-    const draw = (now: number) => {
+    const loop = (now: number) => {
       const dt = Math.min((now - last) / 1000, 0.1)
       last = now
       if (playingRef.current) timeRef.current += dt
-      const tGlob = timeRef.current
-
-      ctx.clearRect(0, 0, w, h)
-      const s = scale()
-
-      // ---------- 金属块 ----------
-      const tl = toScreen(v(-2.3, 0))
-      const br = toScreen(v(2.3, -1.55))
-      const metalGrad = ctx.createLinearGradient(0, tl.y, 0, br.y)
-      metalGrad.addColorStop(0, '#2c333f')
-      metalGrad.addColorStop(0.5, '#20262f')
-      metalGrad.addColorStop(1, '#161a21')
-      ctx.fillStyle = metalGrad
-      ctx.fillRect(0, tl.y, w, br.y - tl.y)
-      // 拉丝纹理（水平细线）
-      ctx.strokeStyle = 'rgba(255,255,255,0.025)'
-      ctx.lineWidth = 1
-      for (let y = tl.y + 6; y < br.y; y += 7) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke()
-      }
-      // 表面高亮线
-      ctx.strokeStyle = 'rgba(220,230,245,0.35)'
-      ctx.lineWidth = 1.5
-      ctx.beginPath(); ctx.moveTo(0, tl.y); ctx.lineTo(w, tl.y); ctx.stroke()
-
-      // ---------- 沟槽腔体 ----------
-      const c0 = toScreen(v(0, 0))
-      const rad = R * s
-      ctx.save()
-      ctx.beginPath()
-      ctx.arc(c0.x, c0.y, rad, 0, Math.PI, false) // 下半圆（屏幕 y 向下）
-      ctx.closePath()
-      const cavGrad = ctx.createRadialGradient(c0.x, c0.y + rad * 0.4, rad * 0.1, c0.x, c0.y, rad)
-      cavGrad.addColorStop(0, '#05070a')
-      cavGrad.addColorStop(1, '#0d1117')
-      ctx.fillStyle = cavGrad
-      ctx.fill()
-      // 槽壁
-      ctx.strokeStyle = '#7d8794'
-      ctx.lineWidth = 2.5
-      ctx.stroke()
-      ctx.restore()
-
-      // ---------- 出射锥面轮廓 ----------
-      if (showCone && cone) {
-        // 槽口中心为顶点的角度规：一条横跨 min..max 出射角的弧 + 两条短虚线边界
-        const apexW = v(0, 0)
-        const apex = toScreen(apexW)
-        const RL = 0.85 * R
-        const rr = RL * s
-        const p1 = toScreen(add(apexW, v(RL * Math.sin(cone.min), RL * Math.cos(cone.min))))
-        const p2 = toScreen(add(apexW, v(RL * Math.sin(cone.max), RL * Math.cos(cone.max))))
-        ctx.save()
-        ctx.setLineDash([5, 5])
-        ctx.strokeStyle = 'rgba(143,208,255,0.55)'
-        ctx.lineWidth = 1.4
-        ctx.beginPath(); ctx.moveTo(apex.x, apex.y); ctx.lineTo(p1.x, p1.y); ctx.stroke()
-        ctx.beginPath(); ctx.moveTo(apex.x, apex.y); ctx.lineTo(p2.x, p2.y); ctx.stroke()
-        ctx.setLineDash([])
-        // 出射角范围弧（屏幕坐标角 = 世界角 - π/2）
-        ctx.strokeStyle = 'rgba(143,208,255,0.85)'
-        ctx.lineWidth = 2
-        ctx.beginPath()
-        ctx.arc(apex.x, apex.y, rr, cone.min - Math.PI / 2, cone.max - Math.PI / 2, false)
-        ctx.stroke()
-        // 标注放在弧顶上方
-        const mid = (cone.min + cone.max) / 2
-        const lp = toScreen(add(apexW, v((RL + 0.32) * Math.sin(mid), (RL + 0.32) * Math.cos(mid))))
-        ctx.font = '12px ui-sans-serif, system-ui'
-        ctx.fillStyle = 'rgba(143,208,255,0.95)'
-        ctx.textAlign = 'center'
-        ctx.fillText('出射光锥', lp.x, lp.y - 4)
-        ctx.restore()
-      }
-
-      // ---------- 光路 ----------
-      const firstBounceIdx = 1
-      for (const ray of rays) {
-        const pts = ray.pts.map(toScreen)
-        ctx.save()
-        ctx.lineCap = 'round'
-        ctx.lineJoin = 'round'
-        // 入射段
-        ctx.strokeStyle = ray.center ? COL_CENTER : COL_INCIDENT
-        ctx.globalAlpha = ray.center ? 0.95 : 0.55
-        ctx.lineWidth = ray.center ? 3 : 1.6
-        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y); ctx.lineTo(pts[firstBounceIdx]?.x ?? pts[0].x, pts[firstBounceIdx]?.y ?? pts[0].y); ctx.stroke()
-        // 反射段
-        ctx.strokeStyle = ray.center ? COL_CENTER : COL_REFLECT
-        ctx.globalAlpha = ray.center ? 0.95 : 0.6
-        ctx.beginPath()
-        ctx.moveTo(pts[firstBounceIdx].x, pts[firstBounceIdx].y)
-        for (let k = firstBounceIdx + 1; k < pts.length; k++) ctx.lineTo(pts[k].x, pts[k].y)
-        ctx.stroke()
-        ctx.restore()
-
-        // 命中点
-        for (const b of ray.bounces) {
-          const bp = toScreen(b.p)
-          ctx.beginPath()
-          ctx.arc(bp.x, bp.y, ray.center ? 3.4 : 2.2, 0, Math.PI * 2)
-          ctx.fillStyle = ray.center ? COL_CENTER : '#e8eef5'
-          ctx.fill()
-        }
-
-        // 法线（弧面：指向圆心；平面：竖直向上）
-        if (showNormals) {
-          ctx.save()
-          ctx.setLineDash([3, 4])
-          ctx.strokeStyle = 'rgba(180,192,205,0.4)'
-          ctx.lineWidth = 1
-          for (const b of ray.bounces) {
-            const n = b.kind === 'arc' ? mul(b.p, -1 / len(b.p)) : v(0, 1)
-            const a = toScreen(b.p)
-            const bq = toScreen(add(b.p, mul(n, 0.42)))
-            ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(bq.x, bq.y); ctx.stroke()
-          }
-          ctx.restore()
-        }
-      }
-
-      // ---------- 光子动画 ----------
-      const speed = 1.15 // 世界单位 / 秒
-      rays.forEach((ray, idx) => {
-        const pts = ray.pts
-        const cum: number[] = [0]
-        for (let k = 1; k < pts.length; k++) cum.push(cum[k - 1] + len(sub(pts[k], pts[k - 1])))
-        const total = cum[cum.length - 1]
-        const cycle = total + 1.1
-        const sPos = (tGlob * speed + idx * 0.55) % cycle
-        if (sPos > total) return
-        const { pos, seg } = pointAlong(pts, cum, sPos)
-        const sp = toScreen(pos)
-        // 拖尾
-        const tail = pointAlong(pts, cum, Math.max(0, sPos - 0.22))
-        const tp = toScreen(tail.pos)
-        ctx.save()
-        ctx.strokeStyle = seg === 0 ? COL_INCIDENT : COL_REFLECT
-        ctx.lineWidth = ray.center ? 3.4 : 2.2
-        ctx.globalAlpha = 0.9
-        ctx.lineCap = 'round'
-        ctx.beginPath(); ctx.moveTo(tp.x, tp.y); ctx.lineTo(sp.x, sp.y); ctx.stroke()
-        // 光点头
-        const glow = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, 7)
-        glow.addColorStop(0, 'rgba(255,244,214,1)')
-        glow.addColorStop(0.35, seg === 0 ? 'rgba(245,198,103,0.85)' : 'rgba(143,208,255,0.85)')
-        glow.addColorStop(1, 'rgba(0,0,0,0)')
-        ctx.fillStyle = glow
-        ctx.beginPath(); ctx.arc(sp.x, sp.y, 7, 0, Math.PI * 2); ctx.fill()
-        ctx.restore()
-      })
-
-      // ---------- 入射角标注（右上角小图，避开左上角标题卡） ----------
-      {
-        const gx = w - 96
-        const gy = 56
-        const L = 34
-        const iRad = (angleI * Math.PI) / 180
-        ctx.save()
-        ctx.setLineDash([4, 4])
-        ctx.strokeStyle = 'rgba(180,192,205,0.55)'
-        ctx.lineWidth = 1
-        ctx.beginPath(); ctx.moveTo(gx, gy - L); ctx.lineTo(gx, gy + L); ctx.stroke()
-        ctx.setLineDash([])
-        // 光线方向 d=(sin i, -cos i)，小图画的是入射光线（朝右下）
-        ctx.strokeStyle = COL_INCIDENT
-        ctx.lineWidth = 2
-        ctx.beginPath()
-        ctx.moveTo(gx - L * Math.sin(iRad), gy - L * Math.cos(iRad))
-        ctx.lineTo(gx, gy)
-        ctx.stroke()
-        // 角弧
-        ctx.strokeStyle = 'rgba(240,217,176,0.9)'
-        ctx.lineWidth = 1.4
-        ctx.beginPath()
-        ctx.arc(gx, gy, L * 0.55, -Math.PI / 2 - iRad, -Math.PI / 2, false)
-        ctx.stroke()
-        ctx.font = 'italic 13px Georgia, serif'
-        ctx.fillStyle = '#f0d9b0'
-        ctx.textAlign = 'left'
-        ctx.fillText('i', gx + 12, gy - L * 0.32)
-        ctx.restore()
-      }
-
-      raf = requestAnimationFrame(draw)
+      controls.update()
+      renderer.render(scene, camera)
+      raf = requestAnimationFrame(loop)
     }
-    raf = requestAnimationFrame(draw)
-    return () => { cancelAnimationFrame(raf); ro.disconnect() }
+    raf = requestAnimationFrame(loop)
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+      renderer.dispose()
+      wrap.removeChild(renderer.domElement)
+      sceneRef.current = null
+    }
+  }, [])
+
+  // ---------- 光路重建 ----------
+  useEffect(() => {
+    const s = sceneRef.current
+    if (!s) return
+    s.rayGroup.clear()
+
+    const addLines = (segs: THREE.Vector3[][], color: number, opacity: number, widthY = 0) => {
+      const pts: THREE.Vector3[] = []
+      for (const seg of segs) for (let k = 0; k + 1 < seg.length; k++) {
+        pts.push(seg[k].clone().setY(widthY), seg[k + 1].clone().setY(widthY))
+      }
+      if (!pts.length) return
+      s.rayGroup.add(new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineBasicMaterial({ color, transparent: true, opacity }),
+      ))
+    }
+
+    // 主光幕（y=0）：入射段金色、反射段蓝色；中心高亮光更亮
+    for (const ray of rays) {
+      const p3 = ray.pts.map((p) => to3(p))
+      addLines([p3.slice(0, 2)], ray.center ? COL_CENTER : COL_INCIDENT, ray.center ? 0.95 : 0.6)
+      if (p3.length > 2) addLines([p3.slice(1)], ray.center ? COL_CENTER : COL_REFLECT, ray.center ? 0.95 : 0.65)
+      // 命中点
+      for (const b of ray.bounces) {
+        const dotMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(ray.center ? 0.035 : 0.022, 10, 8),
+          new THREE.MeshBasicMaterial({ color: ray.center ? COL_CENTER : 0xe8eef5 }),
+        )
+        dotMesh.position.copy(to3(b.p))
+        s.rayGroup.add(dotMesh)
+      }
+      // 法线
+      if (showNormals) {
+        const nPts: THREE.Vector3[] = []
+        for (const b of ray.bounces) {
+          const n = b.kind === 'arc' ? mul(b.p, -1 / len(b.p)) : v(0, 1)
+          nPts.push(to3(b.p), to3(add(b.p, mul(n, 0.4))))
+        }
+        if (nPts.length) {
+          const mat = new THREE.LineDashedMaterial({ color: 0xb4c0cd, transparent: true, opacity: 0.4, dashSize: 0.05, gapSize: 0.05 })
+          const lines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(nPts), mat)
+          lines.computeLineDistances()
+          s.rayGroup.add(lines)
+        }
+      }
+    }
+
+    // 两侧淡化平行光幕（体现三维平移对称性）
+    for (const wy of [-1.1, 1.1]) {
+      for (const ray of rays) {
+        if (ray.center) continue
+        const p3 = ray.pts.map((p) => to3(p))
+        addLines([p3.slice(0, 2)], COL_INCIDENT, 0.14, wy)
+        if (p3.length > 2) addLines([p3.slice(1)], COL_REFLECT, 0.16, wy)
+      }
+    }
+
+    // 出射光锥角度规（y=0 剖面内：槽口中心为顶点的角弧 + 两条虚线边界）
+    if (showCone && cone) {
+      const apex = v(0, 0)
+      const RL = 0.85 * R
+      const arcPts: THREE.Vector3[] = []
+      const N = 48
+      for (let k = 0; k <= N; k++) {
+        const a = cone.min + ((cone.max - cone.min) * k) / N
+        arcPts.push(to3(add(apex, v(RL * Math.sin(a), RL * Math.cos(a)))))
+      }
+      s.rayGroup.add(new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(arcPts),
+        new THREE.LineBasicMaterial({ color: COL_REFLECT, transparent: true, opacity: 0.9 }),
+      ))
+      const bPts: THREE.Vector3[] = []
+      for (const a of [cone.min, cone.max]) {
+        bPts.push(to3(apex), to3(add(apex, v(1.25 * RL * Math.sin(a), 1.25 * RL * Math.cos(a)))))
+      }
+      const bMat = new THREE.LineDashedMaterial({ color: COL_REFLECT, transparent: true, opacity: 0.55, dashSize: 0.07, gapSize: 0.06 })
+      const bLines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(bPts), bMat)
+      bLines.computeLineDistances()
+      s.rayGroup.add(bLines)
+    }
   }, [rays, cone, showNormals, showCone])
+
+  // ---------- 光子动画 + 出射光锥标签投影 ----------
+  useEffect(() => {
+    let raf = 0
+    const tick = () => {
+      const s = sceneRef.current
+      if (!s) return
+      // 光子位置
+      const pos = s.photons.geometry.getAttribute('position') as THREE.BufferAttribute
+      const speed = 1.15
+      let idx = 0
+      rays.forEach((ray, ri) => {
+        const cum: number[] = [0]
+        for (let k = 1; k < ray.pts.length; k++) cum.push(cum[k - 1] + len(sub(ray.pts[k], ray.pts[k - 1])))
+        const total = cum[cum.length - 1]
+        const sp = (timeRef.current * speed + ri * 0.55) % (total + 1.1)
+        if (sp > total || idx >= 64) return
+        let seg = 0
+        while (seg < cum.length - 2 && cum[seg + 1] < sp) seg++
+        const t = cum[seg + 1] === cum[seg] ? 0 : (sp - cum[seg]) / (cum[seg + 1] - cum[seg])
+        const p = add(ray.pts[seg], mul(sub(ray.pts[seg + 1], ray.pts[seg]), Math.min(Math.max(t, 0), 1)))
+        pos.setXYZ(idx++, p.x, 0, p.y)
+      })
+      // 隐藏多余点（挪到远处）
+      for (let k = idx; k < 64; k++) pos.setXYZ(k, 0, 0, -1000)
+      pos.needsUpdate = true
+      // 「出射光锥」标签跟随投影
+      const label = coneLabelRef.current
+      if (label && wrapRef.current) {
+        if (showCone && cone) {
+          const mid = (cone.min + cone.max) / 2
+          const wp = new THREE.Vector3(1.2 * R * Math.sin(mid), 0, 1.2 * R * Math.cos(mid))
+          wp.project(s.camera)
+          const r = wrapRef.current.getBoundingClientRect()
+          label.style.display = 'block'
+          label.style.left = `${((wp.x + 1) / 2) * r.width}px`
+          label.style.top = `${((1 - wp.y) / 2) * r.height}px`
+        } else {
+          label.style.display = 'none'
+        }
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [rays, cone, showCone])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#0b0e13]">
@@ -398,12 +395,14 @@ export default function GrooveMicro() {
         </button>
       </div>
 
-      {/* 画布 */}
+      {/* 3D 画布 */}
       <div ref={wrapRef} className="relative min-h-0 flex-1">
-        <canvas ref={canvasRef} className="absolute inset-0" />
-        <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-[#232a38] bg-[#11151d]/85 px-3 py-2 backdrop-blur md:left-4 md:top-4">
+        <div ref={coneLabelRef} className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full pb-1 text-xs text-[#8fd0ff]" style={{ display: 'none' }}>
+          出射光锥
+        </div>
+        <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-lg border border-[#232a38] bg-[#11151d]/85 px-3 py-2 backdrop-blur md:left-4 md:top-4">
           <h2 className="text-[13px] font-semibold tracking-wide text-[#e6ebf2]">沟槽微观机理示意</h2>
-          <p className="mt-0.5 hidden text-[11px] text-[#66707e] md:block">平行光在半圆形沟槽壁上的镜面反射（剖面放大图）</p>
+          <p className="mt-0.5 hidden text-[11px] text-[#66707e] md:block">平行光在 U 形（半圆截面）沟槽壁上的镜面反射 · 拖动旋转视角</p>
         </div>
       </div>
 
@@ -411,7 +410,7 @@ export default function GrooveMicro() {
       <div className="border-t border-[#232a38] bg-[#11151d] px-4 py-2.5 text-[11px] leading-relaxed text-[#8b95a5] md:text-xs">
         <span className="text-[#f0d9b0]">①</span> 射到槽底中心的光线沿正常（镜面）方向原路返回{angleI <= 45 ? '（图中高亮金色）' : '（当前 i>45°，槽底中心被槽沿遮挡）'}&ensp;
         <span className="text-[#f0d9b0]">②</span> 射到左半槽壁的光被反射到右侧，右半槽壁的光被反射到左侧，彼此交叉&ensp;
-        <span className="text-[#f0d9b0]">③</span> 全部出射光的方向大致张成一个锥面（蓝色轮廓）——宏观亮线的微观来源
+        <span className="text-[#f0d9b0]">③</span> 全部出射光的方向大致张成一个锥面（蓝色角弧）——宏观亮线的微观来源
       </div>
     </div>
   )

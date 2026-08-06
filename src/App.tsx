@@ -3,12 +3,14 @@ import type { SimParams } from '@/sim/types'
 import { DEFAULT_PARAMS, cloneParams } from '@/sim/types'
 import type { DragUpdate, GlitterScene } from '@/sim/glitterScene'
 import GlitterCanvas from '@/components/GlitterCanvas'
+import GrooveMicro from '@/components/GrooveMicro'
 import ControlPanel from '@/components/ControlPanel'
 import InfoPanel from '@/components/InfoPanel'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { Move, RotateCw, SlidersHorizontal, X } from 'lucide-react'
 
 export default function App() {
+  const [tab, setTab] = useState<'glitter' | 'micro'>('glitter')
   const [params, setParams] = useState<SimParams>(DEFAULT_PARAMS)
   const [panelOpen, setPanelOpen] = useState(false)
   const [selection, setSelection] = useState<string | null>(null)
@@ -51,7 +53,28 @@ export default function App() {
   const insetH = isMobile ? 110 : 208
 
   return (
-    <div className="flex h-[100dvh] overflow-hidden bg-[#0b0e13] text-[#c9d1d9]">
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-[#0b0e13] text-[#c9d1d9]">
+      {/* 页面最顶上：功能标签栏 */}
+      <div className="flex h-11 shrink-0 items-center justify-center gap-1 border-b border-[#232a38] bg-[#0e1219] px-3">
+        {([['micro', '沟槽微观机理'], ['glitter', '反射亮线模拟']] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={`rounded-md px-4 py-1.5 text-[13px] font-medium transition-colors ${
+              tab === key ? 'bg-[#d4a054]/15 text-[#f0d9b0]' : 'text-[#8b95a5] hover:text-[#e6ebf2]'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'micro' ? (
+        <main className="min-h-0 flex-1">
+          <GrooveMicro />
+        </main>
+      ) : (
+      <div className="flex min-h-0 flex-1">
       <main className="relative min-w-0 flex-1">
         <GlitterCanvas params={params} insetRef={insetRef} onDragUpdate={onDragUpdate} sceneRef={sceneRef} onSelectionChange={setSelection} />
 
@@ -126,6 +149,8 @@ export default function App() {
             </div>
           </div>
         </>
+      )}
+      </div>
       )}
     </div>
   )

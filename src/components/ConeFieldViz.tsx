@@ -63,10 +63,15 @@ function buildCones(
       push(-PLATE_W / 2 + 0.4 + ((PLATE_W - 0.8) * i) / (n - 1), -PLATE_D / 2 + 0.4 + ((PLATE_D - 0.8) * j) / (n - 1))
     }
   } else {
-    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
-      const x = -DISK_R + (2 * DISK_R * i) / (n - 1)
-      const y = -DISK_R + (2 * DISK_R * j) / (n - 1)
-      if (Math.hypot(x, y) < DISK_R - 0.15) push(x, y)
+    // 圆盘用环×辐采样，与同心环沟槽结构对齐（相邻环交错半格）
+    const rings = n - 1
+    const spokes = 8
+    for (let k = 1; k <= rings; k++) {
+      const r = ((DISK_R - 0.2) * k) / (rings + 0.5)
+      for (let a = 0; a < spokes; a++) {
+        const phi = (a / spokes) * Math.PI * 2 + (k % 2) * (Math.PI / spokes)
+        push(r * Math.cos(phi), r * Math.sin(phi))
+      }
     }
   }
   return out
@@ -250,7 +255,7 @@ export default function ConeFieldViz() {
     if (!s) return
     s.coneGroup.clear()
     if (cones.length === 0) return
-    const spacing = surface === 'plate' ? (PLATE_W - 0.8) / (density - 1) : (2 * DISK_R) / (density - 1)
+    const spacing = surface === 'plate' ? (PLATE_W - 0.8) / (density - 1) : DISK_R / density
     const L = Math.max(0.28, Math.min(0.55, spacing * 0.55))
     const NG = 8   // 半锥母线条数
     const NR = 16  // 半环分段
@@ -360,7 +365,7 @@ export default function ConeFieldViz() {
           </div>
         )}
         <div className="flex items-center gap-2">
-          <span className="whitespace-nowrap text-[#c9d1d9]">点阵密度 {density}×{density}</span>
+          <span className="whitespace-nowrap text-[#c9d1d9]">点阵密度 {surface === 'plate' ? `${density}×${density}` : `${density - 1}环×8`}</span>
           <Slider className="w-28" min={2} max={8} step={1} value={[density]} onValueChange={(v) => setDensity(v[0])} />
         </div>
       </div>

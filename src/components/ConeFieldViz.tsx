@@ -53,8 +53,7 @@ function buildCones(
       ? pParallel
       : new THREE.Vector3(lightPos.x - qx, lightPos.y - qy, lightPos.z).normalize().negate() // 指向表面
     const c = Math.max(-1, Math.min(1, p.dot(t)))
-    if (Math.abs(c) < 1e-4) return // α≈90° 退化成半平面，跳过避免视觉噪声
-    const alpha = Math.acos(Math.abs(c))
+    const alpha = Math.acos(Math.abs(c)) // α=90° 时退化为半圆扇面、α=0 时退化为单线，均可正常绘制
     const axis = c < 0 ? t.clone().negate() : t
     out.push({ apex: Q, axis, alpha })
   }
@@ -202,10 +201,26 @@ export default function ConeFieldViz() {
       const nrm = new THREE.Vector2(-t.y, t.x)
       const mat = new THREE.LineBasicMaterial({ color: 0x6b7684, transparent: true, opacity: 0.5 })
       const pts: THREE.Vector3[] = []
+      // 沟槽线裁剪到板面矩形内：求解沿 t 方向的参数范围
+      const halfW = PLATE_W / 2 - 0.02
+      const halfD = PLATE_D / 2 - 0.02
       for (let k = -9; k <= 9; k++) {
         const o = nrm.clone().multiplyScalar(k * 0.18)
-        pts.push(new THREE.Vector3(o.x - t.x * 3, o.y - t.y * 3, 0.001))
-        pts.push(new THREE.Vector3(o.x + t.x * 3, o.y + t.y * 3, 0.001))
+        let lo = -Infinity
+        let hi = Infinity
+        for (const [oc, tc, half] of [[o.x, t.x, halfW], [o.y, t.y, halfD]] as const) {
+          if (Math.abs(tc) < 1e-9) {
+            if (Math.abs(oc) > half) { lo = 1; hi = 0; break }
+          } else {
+            const a = (-half - oc) / tc
+            const b = (half - oc) / tc
+            lo = Math.max(lo, Math.min(a, b))
+            hi = Math.min(hi, Math.max(a, b))
+          }
+        }
+        if (lo >= hi) continue
+        pts.push(new THREE.Vector3(o.x + t.x * lo, o.y + t.y * lo, 0.001))
+        pts.push(new THREE.Vector3(o.x + t.x * hi, o.y + t.y * hi, 0.001))
       }
       s.surfaceGroup.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), mat))
     } else {

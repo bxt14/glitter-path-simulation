@@ -7,18 +7,18 @@ import { Pause, Play } from 'lucide-react'
 
 /**
  * 沟槽微观机理示意（3D：U 形半管槽，轴沿 Y）
- * 关键几何（按论文设定）：光的入射面包含沟槽轴 —— 平行光方向 d = (0, −sin i, −cos i) 位于 YZ 平面内。
- * 圆柱面法线没有沿槽（Y）分量 ⟹ 镜面反射保持方向的 t̂ 分量不变 ⟹ 所有出射光与槽轴夹角恒定，
- * 出射方向落在一个绕槽轴的锥面上（锥条件 r·ŷ = −sin i，numpy 验证到 1e-12）。
- * 每条光线在三维中做真实多次镜面反射追踪（上限 4 次）：
- *  - 光线按 x0（与 z=0.2R 参考面交点的 x）均匀采样，横跨槽口与两侧平面；
- *  - 槽底中心光（x0=0）对任意 i 都存在：命中 (0,·,−R)，法线竖直，沿镜面方向返回；
- *  - 左半槽壁的光折向右半、右半折向左半，在腔内交叉；
- *  - 出射锥面轮廓：轴 −ŷ、半角 90°−i 的上半锥线框（z≥0），角范围取实际出射方向的 φ 覆盖区间。
+ * 关键几何（按论文设定）：入射角 i、方位角 φ（入射光水平投影与槽轴 Y 的夹角）。
+ * 光方向 d = (−sin i·sin φ, −sin i·cos φ, −cos i)；φ=0 时入射面即 YZ 平面（包含槽轴）。
+ * 圆柱面法线没有沿槽（Y）分量 ⟹ 镜面反射保持方向的沿槽分量不变（r·ŷ = d·ŷ = −sin i·cos φ）
+ * ⟹ 所有出射光与槽轴夹角恒定，落在绕槽轴的锥面上（numpy 验证到 1e-12）。
+ * 实现要点：
+ *  - 入射点固定：在槽壁横截面（y=0）上按 x0 均匀采样命中点，从命中点沿 −d 反推出射发点，
+ *    因此改变 i / φ 时命中位置不动，只有光线角度变化；
+ *  - 单次反射：第一次镜面反射后若再打到槽壁，光线在该点终止（消失），不再二次反射；
+ *  - 槽底中心光（x0=0）对任意 i、φ 都存在：命中 (0,0,−R)，法线竖直。
  */
 
 const R = 1
-const REF_Y = 0.2
 const START_Y = 2.3
 const PIPE_LEN = 5
 
@@ -39,68 +39,56 @@ const dot = (a: V3, b: V3): number => a.x * b.x + a.y * b.y + a.z * b.z
 const len = (a: V3): number => Math.hypot(a.x, a.y, a.z)
 const to3 = (p: V3): THREE.Vector3 => new THREE.Vector3(p.x, p.y, p.z)
 
-/** 三维光线追踪：槽 = 半圆柱 x²+z²=R²（z≤0，轴沿 Y），光在 YZ 入射面内。
- *  单次反射：第一次镜面反射后若再次打到槽壁/平面，光线在该点终止（消失），不再二次反射。 */
-function traceRay(x0: number, iDeg: number, center = false): RayPath {
+/** 三维光线追踪：槽 = 半圆柱 x²+z²=R²（z≤0，轴沿 Y）。
+ *  入射点固定：给定槽壁命中点（x0, 0, −√(R²−x0²)），沿 −d 反推出射发点。
+ *  单次反射：反射后若再打到槽壁，光线在该点终止（消失）。 */
+function traceRay(x0: number, iDeg: number, phiDeg: number, center = false): RayPath {
   const i = (iDeg * Math.PI) / 180
-  const d0 = v(0, -Math.sin(i), -Math.cos(i))
-  const p0 = sub(v(x0, 0, REF_Y), mul(d0, (REF_Y - START_Y) / d0.z))
-  const pts: V3[] = [v(p0.x, p0.y, p0.z)]
-  const bounces: Bounce[] = []
+  const phi = (phiDeg * Math.PI) / 180
+  const d0 = v(-Math.sin(i) * Math.sin(phi), -Math.sin(i) * Math.cos(phi), -Math.cos(i))
+  const q1 = v(x0, 0, -Math.sqrt(R * R - x0 * x0)) // 固定命中点
+  const sBack = Math.min((START_Y - q1.z) / Math.cos(i), 4.5)
+  const p0 = sub(q1, mul(d0, sBack))
+  const pts: V3[] = [p0, q1]
+  const bounces: Bounce[] = [{ p: q1, kind: 'arc' }]
   let exit: V3 | null = null
 
-  // 求下一场景交点（圆柱面 / 平坦表面 / 出射）
-  const intersect = (p: V3, d: V3): { t: number; kind: 'arc' | 'flat' | 'exit' } | null => {
-    let bestT = Infinity
-    let bestKind: 'arc' | 'flat' | 'exit' | null = null
-    const a2 = d.x * d.x + d.z * d.z
-    const b = 2 * (p.x * d.x + p.z * d.z)
-    const c = p.x * p.x + p.z * p.z - R * R
+  const n = v(-q1.x / R, 0, -q1.z / R) // 柱面法线无 Y 分量
+  const d1 = sub(d0, mul(n, 2 * dot(d0, n)))
+  const p1 = add(q1, mul(d1, 1e-5))
+
+  // 反射后：出射（向上穿过 z=0 且在槽口内）或再中槽壁（终止消失）
+  // 先检查是否再撞圆柱面
+  let tArc = Infinity
+  {
+    const a2 = d1.x * d1.x + d1.z * d1.z
+    const b = 2 * (p1.x * d1.x + p1.z * d1.z)
+    const c = p1.x * p1.x + p1.z * p1.z - R * R
     const disc = b * b - 4 * a2 * c
     if (disc > 0 && a2 > 1e-12) {
       for (const t of [(-b - Math.sqrt(disc)) / (2 * a2), (-b + Math.sqrt(disc)) / (2 * a2)]) {
-        if (t > 1e-6 && t < bestT) {
-          const q = add(p, mul(d, t))
-          if (q.z <= 1e-6) { bestT = t; bestKind = 'arc' }
+        if (t > 1e-4 && t < tArc) {
+          const q = add(p1, mul(d1, t))
+          if (q.z <= 1e-6) tArc = t
         }
       }
     }
-    if (Math.abs(d.z) > 1e-9) {
-      const t = -p.z / d.z
-      if (t > 1e-6 && t < bestT) {
-        const q = add(p, mul(d, t))
-        if (d.z > 0 && p.z < 0) { bestT = t; bestKind = 'exit' }
-        else if (d.z < 0 && Math.abs(q.x) > R) { bestT = t; bestKind = 'flat' }
-      }
+  }
+  const tExit = d1.z > 1e-9 ? -p1.z / d1.z : Infinity
+  if (tExit < tArc && tExit < Infinity) {
+    const qx = add(p1, mul(d1, tExit))
+    if (Math.abs(qx.x) <= R + 1e-6) {
+      pts.push(qx)
+      pts.push(add(qx, mul(d1, 1.3)))
+      exit = d1
+      return { pts, exit, bounces, center }
     }
-    return bestKind === null ? null : { t: bestT, kind: bestKind }
   }
-
-  // 第一次命中
-  const first = intersect(p0, d0)
-  if (first === null) { exit = d0; return { pts, exit, bounces, center } }
-  const q1 = add(p0, mul(d0, first.t))
-  pts.push(q1)
-  if (first.kind === 'exit') { pts.push(add(q1, mul(d0, 1.7))); exit = d0; return { pts, exit, bounces, center } }
-  bounces.push({ p: q1, kind: first.kind })
-  const n = first.kind === 'arc' ? v(-q1.x / R, 0, -q1.z / R) : v(0, 0, 1) // 柱面法线无 Y 分量
-  const d1 = sub(d0, mul(n, 2 * dot(d0, n)))
-  const p1 = add(q1, mul(d1, 1e-6))
-
-  // 反射后：再打到壁上则终止消失；出射则画出射段
-  const second = intersect(p1, d1)
-  if (second === null) {
-    if (d1.z > 1e-6) { pts.push(add(p1, mul(d1, 1.7))); exit = d1 }
-    return { pts, exit, bounces, center }
-  }
-  const q2 = add(p1, mul(d1, second.t))
-  if (second.kind === 'exit') {
-    pts.push(q2)
-    pts.push(add(q2, mul(d1, 1.7)))
+  if (tArc < Infinity) {
+    pts.push(add(p1, mul(d1, tArc))) // 二次命中：终止消失
+  } else if (d1.z > 1e-6) {
+    pts.push(add(p1, mul(d1, 1.3)))
     exit = d1
-  } else {
-    // 二次命中：光线到此终止（消失）
-    pts.push(q2)
   }
   return { pts, exit, bounces, center }
 }
@@ -111,13 +99,12 @@ const COL_CENTER = 0xffe9b0
 
 export default function GrooveMicro() {
   const [angleI, setAngleI] = useState(40)
+  const [angleP, setAngleP] = useState(0)
   const [rayCount, setRayCount] = useState(11)
   const [showNormals, setShowNormals] = useState(true)
-  const [showCone, setShowCone] = useState(true)
   const [playing, setPlaying] = useState(true)
 
   const wrapRef = useRef<HTMLDivElement>(null)
-  const coneLabelRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<{
     renderer: THREE.WebGLRenderer
     camera: THREE.PerspectiveCamera
@@ -128,36 +115,28 @@ export default function GrooveMicro() {
   const playingRef = useRef(playing)
   playingRef.current = playing
 
-  // 光线束（三维追踪）；中心光 x0=0 对任意 i 存在（柱面法线无 Y 分量，与 2D 剖面情形不同）
+  // 光线束（三维追踪）：命中点固定在槽壁横截面 y=0 上，只随 x0 变化
   const rays = useMemo(() => {
     const list: RayPath[] = []
     for (let k = 0; k < rayCount; k++) {
       const x0 = -0.98 * R + (1.96 * R * k) / (rayCount - 1)
-      list.push(traceRay(x0, angleI))
+      list.push(traceRay(x0, angleI, angleP))
     }
-    const cr = traceRay(0, angleI, true)
-    // 物理自检：中心光首命中 (0,·,−R)，出射 = 镜面方向 (0,−sin i,+cos i)
+    const cr = traceRay(0, angleI, angleP, true)
+    // 物理自检：中心光命中 (0,0,−R)；若逃逸（tan i·sin φ ≲ 1），出射须满足镜面 z 分量翻转
     const i = (angleI * Math.PI) / 180
+    const phi = (angleP * Math.PI) / 180
     const first = cr.bounces[0]?.p
-    const ok = first && Math.hypot(first.x, first.z + R) < 1e-6 &&
-      cr.exit && Math.abs(cr.exit.y + Math.sin(i)) < 1e-9 && Math.abs(cr.exit.z - Math.cos(i)) < 1e-9
-    if (!ok) console.warn('[GrooveMicro] 槽底中心光线自检失败', cr)
+    const hitOk = first && Math.hypot(first.x, first.y, first.z + R) < 1e-9
+    const exitOk = !cr.exit || (Math.abs(cr.exit.y + Math.sin(i) * Math.cos(phi)) < 1e-9 && Math.abs(cr.exit.z - Math.cos(i)) < 1e-9)
+    if (!hitOk || !exitOk) console.warn('[GrooveMicro] 槽底中心光线自检失败', cr)
+    const exits = list.filter((r) => r.exit).map((r) => r.exit!)
+    if (exits.some((e) => Math.abs(e.y + Math.sin(i) * Math.cos(phi)) > 1e-9)) {
+      console.warn('[GrooveMicro] 锥条件 r·ŷ = −sin i·cos φ 被破坏')
+    }
     list.push(cr)
     return list
-  }, [angleI, rayCount])
-
-  // 出射锥：所有出射方向满足 r·ŷ = −sin i；φ = atan2(r_z, r_x) 的实际覆盖范围
-  const cone = useMemo(() => {
-    const exits = rays.filter((r) => r.exit && r.exit.z > 0).map((r) => r.exit!)
-    if (exits.length < 2) return null
-    // 锥条件自检
-    const i = (angleI * Math.PI) / 180
-    if (exits.some((e) => Math.abs(e.y + Math.sin(i)) > 1e-9)) {
-      console.warn('[GrooveMicro] 锥条件 r·ŷ = −sin i 被破坏')
-    }
-    const phis = exits.map((e) => Math.atan2(e.z, e.x))
-    return { min: Math.min(...phis), max: Math.max(...phis), alpha: Math.PI / 2 - i }
-  }, [rays, angleI])
+  }, [angleI, angleP, rayCount])
 
   // ---------- three 场景（一次初始化） ----------
   useEffect(() => {
@@ -344,37 +323,7 @@ export default function GrooveMicro() {
       }
     }
 
-    // 出射锥面：轴 −ŷ、半角 90°−i 的上半锥线框（φ 取实际出射覆盖范围）
-    if (showCone && cone) {
-      const apex = new THREE.Vector3(0, 0, 0)
-      const L = 1.6 * R
-      const a = new THREE.Vector3(0, -1, 0)
-      const cosA = Math.cos(cone.alpha)
-      const sinA = Math.sin(cone.alpha)
-      const g = (phi: number) => new THREE.Vector3(
-        sinA * Math.cos(phi),
-        -cosA,
-        sinA * Math.sin(phi),
-      )
-      const linePts: THREE.Vector3[] = []
-      const NG = 8
-      for (let k = 0; k < NG; k++) {
-        const phi = cone.min + ((cone.max - cone.min) * k) / (NG - 1)
-        linePts.push(apex.clone(), apex.clone().addScaledVector(g(phi), L))
-      }
-      const NR = 40
-      for (let k = 0; k < NR; k++) {
-        const p1 = cone.min + ((cone.max - cone.min) * k) / NR
-        const p2 = cone.min + ((cone.max - cone.min) * (k + 1)) / NR
-        linePts.push(apex.clone().addScaledVector(g(p1), L), apex.clone().addScaledVector(g(p2), L))
-      }
-      void a
-      s.rayGroup.add(new THREE.LineSegments(
-        new THREE.BufferGeometry().setFromPoints(linePts),
-        new THREE.LineBasicMaterial({ color: COL_REFLECT, transparent: true, opacity: 0.7 }),
-      ))
-    }
-  }, [rays, cone, showNormals, showCone])
+  }, [rays, showNormals])
 
   // ---------- 光子动画 + 出射光锥标签投影 ----------
   useEffect(() => {
@@ -399,28 +348,11 @@ export default function GrooveMicro() {
       })
       for (let k = idx; k < 96; k++) pos.setXYZ(k, 0, 0, -1000)
       pos.needsUpdate = true
-      // 标签
-      const label = coneLabelRef.current
-      if (label && wrapRef.current) {
-        if (showCone && cone) {
-          const mid = (cone.min + cone.max) / 2
-          const sinA = Math.sin(cone.alpha)
-          const cosA = Math.cos(cone.alpha)
-          const wp = new THREE.Vector3(1.9 * sinA * Math.cos(mid), -1.9 * cosA, 1.9 * sinA * Math.sin(mid))
-          wp.project(s.camera)
-          const r = wrapRef.current.getBoundingClientRect()
-          label.style.display = 'block'
-          label.style.left = `${((wp.x + 1) / 2) * r.width}px`
-          label.style.top = `${((1 - wp.y) / 2) * r.height}px`
-        } else {
-          label.style.display = 'none'
-        }
-      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [rays, cone, showCone])
+  }, [rays])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#0b0e13]">
@@ -431,16 +363,16 @@ export default function GrooveMicro() {
           <Slider className="w-36" min={0} max={80} step={1} value={[angleI]} onValueChange={(v) => setAngleI(v[0])} />
         </div>
         <div className="flex items-center gap-3">
+          <span className="whitespace-nowrap text-xs text-[#9aa5b4]">方位角 <em className="font-serif text-[#f0d9b0]">φ</em> = {angleP}°</span>
+          <Slider className="w-28" min={0} max={90} step={1} value={[angleP]} onValueChange={(v) => setAngleP(v[0])} />
+        </div>
+        <div className="flex items-center gap-3">
           <span className="whitespace-nowrap text-xs text-[#9aa5b4]">光线数 {rayCount}</span>
           <Slider className="w-24" min={5} max={61} step={2} value={[rayCount]} onValueChange={(v) => setRayCount(v[0])} />
         </div>
         <label className="flex cursor-pointer items-center gap-2 text-xs text-[#9aa5b4]">
           <Switch checked={showNormals} onCheckedChange={setShowNormals} id="sw-normals" />
           <span>法线</span>
-        </label>
-        <label className="flex cursor-pointer items-center gap-2 text-xs text-[#9aa5b4]">
-          <Switch checked={showCone} onCheckedChange={setShowCone} id="sw-cone" />
-          <span>出射光锥轮廓</span>
         </label>
         <button
           className="flex items-center gap-1.5 rounded-full border border-[#2a3242] bg-[#161b25] px-3 py-1 text-xs text-[#c9d1d9] transition-colors hover:border-[#d4a054]/60 hover:text-[#f0d9b0]"
@@ -452,12 +384,9 @@ export default function GrooveMicro() {
 
       {/* 3D 画布 */}
       <div ref={wrapRef} className="relative min-h-0 flex-1">
-        <div ref={coneLabelRef} className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full pb-1 text-xs text-[#8fd0ff]" style={{ display: 'none' }}>
-          出射光锥（绕槽轴）
-        </div>
         <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-lg border border-[#232a38] bg-[#11151d]/85 px-3 py-2 backdrop-blur md:left-4 md:top-4">
           <h2 className="text-[13px] font-semibold tracking-wide text-[#e6ebf2]">沟槽微观机理示意</h2>
-          <p className="mt-0.5 hidden text-[11px] text-[#66707e] md:block">入射面包含槽轴（YZ 平面）的平行光在 U 形槽壁上的镜面反射 · 拖动旋转视角</p>
+          <p className="mt-0.5 hidden text-[11px] text-[#66707e] md:block">平行光在 U 形槽壁上的镜面反射 · φ 控制入射面与槽轴的夹角 · 拖动旋转视角</p>
         </div>
       </div>
 
@@ -465,7 +394,7 @@ export default function GrooveMicro() {
       <div className="border-t border-[#232a38] bg-[#11151d] px-4 py-2.5 text-[11px] leading-relaxed text-[#8b95a5] md:text-xs">
         <span className="text-[#f0d9b0]">①</span> 射到槽底中心的光线沿正常（镜面）方向返回（高亮金色）&ensp;
         <span className="text-[#f0d9b0]">②</span> 射到左半槽壁的光折向右半、右半折向左半；若再撞上槽壁则被吸收消失&ensp;
-        <span className="text-[#f0d9b0]">③</span> 槽壁法线没有沿槽分量，反射保持方向的沿槽分量不变 → 全部出射光与槽轴夹角恒定，张成一个绕槽轴的锥面（蓝色线框）
+        <span className="text-[#f0d9b0]">③</span> 槽壁法线没有沿槽分量，反射保持沿槽分量不变 → 全部出射光与槽轴夹角恒定，张成一个绕槽轴的锥面；增大 φ 锥面张角变大
       </div>
     </div>
   )

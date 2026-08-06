@@ -154,6 +154,9 @@ export default function GrooveMicro() {
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100)
     camera.up.set(0, 0, 1)
     camera.position.set(1.2, -5.6, 2.5)
+    // 窄屏（移动端竖屏）拉远初始相机，保证槽体与光路完整入画
+    const initRect = wrap.getBoundingClientRect()
+    if (initRect.width / Math.max(initRect.height, 1) < 0.9) camera.position.multiplyScalar(1.7)
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.target.set(0, 0.1, -0.1)
     controls.enableDamping = true
@@ -189,8 +192,8 @@ export default function GrooveMicro() {
     belly.position.set(0, 0, -1.19)
     scene.add(belly)
     // 槽腔内柔和补光，让交叉反射光路可读
-    const fill = new THREE.PointLight(0xfff2dd, 12, 7, 1.6)
-    fill.position.set(0.3, -0.6, 1.4)
+    const fill = new THREE.PointLight(0xfff2dd, 5, 7, 1.8)
+    fill.position.set(0.3, -1.6, 1.8)
     scene.add(fill)
     // 槽口两端封口（可有可无的视觉细节：端面圆环省略，保持开放感）
 

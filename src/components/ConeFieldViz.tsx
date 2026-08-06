@@ -92,6 +92,7 @@ export default function ConeFieldViz() {
     coneGroup: THREE.Group
     lightMesh: THREE.Mesh
     sunSprite: THREE.Group
+    rayGroup: THREE.Group
     surfaceGroup: THREE.Group
     camera: THREE.PerspectiveCamera
   } | null>(null)
@@ -161,8 +162,10 @@ export default function ConeFieldViz() {
     )
     sunSprite.add(sunCore)
     scene.add(sunSprite)
+    const rayGroup = new THREE.Group()
+    scene.add(rayGroup)
 
-    sceneRef.current = { renderer, coneGroup, lightMesh, sunSprite, surfaceGroup, camera }
+    sceneRef.current = { renderer, coneGroup, lightMesh, sunSprite, rayGroup, surfaceGroup, camera }
 
     const resize = () => {
       const r = wrap.getBoundingClientRect()
@@ -302,17 +305,39 @@ export default function ConeFieldViz() {
   useEffect(() => {
     const s = sceneRef.current
     if (!s) return
+    s.rayGroup.clear()
+    const rayPts: THREE.Vector3[] = []
     if (lightMode === 'point') {
       s.lightMesh.visible = true
       s.sunSprite.visible = false
       s.lightMesh.position.set(lightPos.x, lightPos.y, lightPos.z)
+      // 从点光源到板面若干点的入射线（末端留空隙不碰板）
+      const L = new THREE.Vector3(lightPos.x, lightPos.y, lightPos.z)
+      for (const [tx, ty] of [[-1.2, -1], [0, -1], [1.2, -1], [-1.2, 1], [0, 1], [1.2, 1], [0, 0]] as const) {
+        const T = new THREE.Vector3(tx, ty, 0)
+        const end = L.clone().lerp(T, 0.88)
+        rayPts.push(L.clone(), end)
+      }
     } else {
       s.lightMesh.visible = false
       s.sunSprite.visible = true
       const az = azimuth * DEG
       const el = elevation * DEG
-      // 太阳位于入射方向的反方向（光来自那里）
-      s.sunSprite.position.set(Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)).multiplyScalar(4.5)
+      const from = new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el))
+      s.sunSprite.position.copy(from.clone().multiplyScalar(3.1))
+      // 平行入射线：掠过板面上方，指向板面
+      const p = from.clone().negate()
+      for (let k = -2; k <= 2; k++) {
+        const B = new THREE.Vector3(0, k * 0.85, 0)
+        rayPts.push(B.clone().addScaledVector(p, -0).add(from.clone().multiplyScalar(2.6)),
+                    B.clone().addScaledVector(p, -0).add(from.clone().multiplyScalar(0.45)))
+      }
+    }
+    if (rayPts.length) {
+      s.rayGroup.add(new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(rayPts),
+        new THREE.LineBasicMaterial({ color: 0xf5c667, transparent: true, opacity: 0.45 }),
+      ))
     }
   }, [lightMode, lightPos, azimuth, elevation])
 

@@ -20,7 +20,6 @@ import { Pause, Play } from 'lucide-react'
 const R = 1
 const REF_Y = 0.2
 const START_Y = 2.3
-const MAX_BOUNCE = 4
 const PIPE_LEN = 5
 
 interface V3 { x: number; y: number; z: number }
@@ -40,19 +39,20 @@ const dot = (a: V3, b: V3): number => a.x * b.x + a.y * b.y + a.z * b.z
 const len = (a: V3): number => Math.hypot(a.x, a.y, a.z)
 const to3 = (p: V3): THREE.Vector3 => new THREE.Vector3(p.x, p.y, p.z)
 
-/** 三维光线追踪：槽 = 半圆柱 x²+z²=R²（z≤0，轴沿 Y），光在 YZ 入射面内 */
+/** 三维光线追踪：槽 = 半圆柱 x²+z²=R²（z≤0，轴沿 Y），光在 YZ 入射面内。
+ *  单次反射：第一次镜面反射后若再次打到槽壁/平面，光线在该点终止（消失），不再二次反射。 */
 function traceRay(x0: number, iDeg: number, center = false): RayPath {
   const i = (iDeg * Math.PI) / 180
-  let d = v(0, -Math.sin(i), -Math.cos(i))
-  let p = sub(v(x0, 0, REF_Y), mul(d, (REF_Y - START_Y) / d.z))
-  const pts: V3[] = [v(p.x, p.y, p.z)]
+  const d0 = v(0, -Math.sin(i), -Math.cos(i))
+  const p0 = sub(v(x0, 0, REF_Y), mul(d0, (REF_Y - START_Y) / d0.z))
+  const pts: V3[] = [v(p0.x, p0.y, p0.z)]
   const bounces: Bounce[] = []
   let exit: V3 | null = null
 
-  for (let k = 0; k < MAX_BOUNCE; k++) {
+  // 求下一场景交点（圆柱面 / 平坦表面 / 出射）
+  const intersect = (p: V3, d: V3): { t: number; kind: 'arc' | 'flat' | 'exit' } | null => {
     let bestT = Infinity
     let bestKind: 'arc' | 'flat' | 'exit' | null = null
-    // 圆柱 x²+z²=R²（z≤0 半管）
     const a2 = d.x * d.x + d.z * d.z
     const b = 2 * (p.x * d.x + p.z * d.z)
     const c = p.x * p.x + p.z * p.z - R * R
@@ -65,7 +65,6 @@ function traceRay(x0: number, iDeg: number, center = false): RayPath {
         }
       }
     }
-    // 表面平面 z=0：向上穿越 = 出射；向下且 |x|>R = 平坦表面反射
     if (Math.abs(d.z) > 1e-9) {
       const t = -p.z / d.z
       if (t > 1e-6 && t < bestT) {
@@ -74,22 +73,34 @@ function traceRay(x0: number, iDeg: number, center = false): RayPath {
         else if (d.z < 0 && Math.abs(q.x) > R) { bestT = t; bestKind = 'flat' }
       }
     }
-    if (bestKind === null) {
-      if (d.z > 1e-6) pts.push(add(p, mul(d, 1.7)))
-      exit = d
-      break
-    }
-    const q = add(p, mul(d, bestT))
-    pts.push(q)
-    if (bestKind === 'exit') {
-      pts.push(add(q, mul(d, 1.7)))
-      exit = d
-      break
-    }
-    bounces.push({ p: q, kind: bestKind })
-    const n = bestKind === 'arc' ? v(-q.x / R, 0, -q.z / R) : v(0, 0, 1) // 柱面法线无 Y 分量
-    d = sub(d, mul(n, 2 * dot(d, n)))
-    p = add(q, mul(d, 1e-6))
+    return bestKind === null ? null : { t: bestT, kind: bestKind }
+  }
+
+  // 第一次命中
+  const first = intersect(p0, d0)
+  if (first === null) { exit = d0; return { pts, exit, bounces, center } }
+  const q1 = add(p0, mul(d0, first.t))
+  pts.push(q1)
+  if (first.kind === 'exit') { pts.push(add(q1, mul(d0, 1.7))); exit = d0; return { pts, exit, bounces, center } }
+  bounces.push({ p: q1, kind: first.kind })
+  const n = first.kind === 'arc' ? v(-q1.x / R, 0, -q1.z / R) : v(0, 0, 1) // 柱面法线无 Y 分量
+  const d1 = sub(d0, mul(n, 2 * dot(d0, n)))
+  const p1 = add(q1, mul(d1, 1e-6))
+
+  // 反射后：再打到壁上则终止消失；出射则画出射段
+  const second = intersect(p1, d1)
+  if (second === null) {
+    if (d1.z > 1e-6) { pts.push(add(p1, mul(d1, 1.7))); exit = d1 }
+    return { pts, exit, bounces, center }
+  }
+  const q2 = add(p1, mul(d1, second.t))
+  if (second.kind === 'exit') {
+    pts.push(q2)
+    pts.push(add(q2, mul(d1, 1.7)))
+    exit = d1
+  } else {
+    // 二次命中：光线到此终止（消失）
+    pts.push(q2)
   }
   return { pts, exit, bounces, center }
 }
@@ -121,7 +132,7 @@ export default function GrooveMicro() {
   const rays = useMemo(() => {
     const list: RayPath[] = []
     for (let k = 0; k < rayCount; k++) {
-      const x0 = -1.35 + (2.7 * k) / (rayCount - 1)
+      const x0 = -0.98 * R + (1.96 * R * k) / (rayCount - 1)
       list.push(traceRay(x0, angleI))
     }
     const cr = traceRay(0, angleI, true)
@@ -220,7 +231,7 @@ export default function GrooveMicro() {
     pctx.fillStyle = grad
     pctx.fillRect(0, 0, 64, 64)
     const photonGeo = new THREE.BufferGeometry()
-    photonGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * 64), 3))
+    photonGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * 96), 3))
     const photons = new THREE.Points(photonGeo, new THREE.PointsMaterial({
       map: new THREE.CanvasTexture(pc), color: 0xffffff, size: 0.14, sizeAttenuation: true,
       transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
@@ -266,10 +277,28 @@ export default function GrooveMicro() {
     if (!s) return
     s.rayGroup.clear()
 
+    const Y_CLIP = PIPE_LEN / 2 + 0.7
+    const clipSeg = (a: THREE.Vector3, b: THREE.Vector3): [THREE.Vector3, THREE.Vector3] | null => {
+      let lo = 0
+      let hi = 1
+      for (const [ac, bc, lim] of [[a.y, b.y, Y_CLIP], [a.z, b.z, START_Y + 0.6]] as const) {
+        const d = bc - ac
+        if (Math.abs(d) < 1e-9) { if (Math.abs(ac) > lim) return null; continue }
+        const t1 = (-lim - ac) / d
+        const t2 = (lim - ac) / d
+        lo = Math.max(lo, Math.min(t1, t2))
+        hi = Math.min(hi, Math.max(t1, t2))
+      }
+      // z 下界不裁（槽底在 z=-1）
+      if (lo >= hi) return null
+      return [a.clone().lerp(b, lo), a.clone().lerp(b, hi)]
+    }
     const addLines = (segs: THREE.Vector3[][], color: number, opacity: number, yOff = 0) => {
       const pts: THREE.Vector3[] = []
       for (const seg of segs) for (let k = 0; k + 1 < seg.length; k++) {
-        pts.push(seg[k].clone().setY(seg[k].y + yOff), seg[k + 1].clone().setY(seg[k + 1].y + yOff))
+        const clipped = clipSeg(seg[k], seg[k + 1])
+        if (!clipped) continue
+        pts.push(clipped[0].setY(clipped[0].y + yOff), clipped[1].setY(clipped[1].y + yOff))
       }
       if (!pts.length) return
       s.rayGroup.add(new THREE.LineSegments(
@@ -361,14 +390,14 @@ export default function GrooveMicro() {
         for (let k = 1; k < ray.pts.length; k++) cum.push(cum[k - 1] + len(sub(ray.pts[k], ray.pts[k - 1])))
         const total = cum[cum.length - 1]
         const sp = (timeRef.current * speed + ri * 0.55) % (total + 1.1)
-        if (sp > total || idx >= 64) return
+        if (sp > total || idx >= 96) return
         let seg = 0
         while (seg < cum.length - 2 && cum[seg + 1] < sp) seg++
         const t = cum[seg + 1] === cum[seg] ? 0 : (sp - cum[seg]) / (cum[seg + 1] - cum[seg])
         const p = add(ray.pts[seg], mul(sub(ray.pts[seg + 1], ray.pts[seg]), Math.min(Math.max(t, 0), 1)))
         pos.setXYZ(idx++, p.x, p.y, p.z)
       })
-      for (let k = idx; k < 64; k++) pos.setXYZ(k, 0, 0, -1000)
+      for (let k = idx; k < 96; k++) pos.setXYZ(k, 0, 0, -1000)
       pos.needsUpdate = true
       // 标签
       const label = coneLabelRef.current
@@ -403,7 +432,7 @@ export default function GrooveMicro() {
         </div>
         <div className="flex items-center gap-3">
           <span className="whitespace-nowrap text-xs text-[#9aa5b4]">光线数 {rayCount}</span>
-          <Slider className="w-24" min={5} max={17} step={2} value={[rayCount]} onValueChange={(v) => setRayCount(v[0])} />
+          <Slider className="w-24" min={5} max={61} step={2} value={[rayCount]} onValueChange={(v) => setRayCount(v[0])} />
         </div>
         <label className="flex cursor-pointer items-center gap-2 text-xs text-[#9aa5b4]">
           <Switch checked={showNormals} onCheckedChange={setShowNormals} id="sw-normals" />
@@ -435,7 +464,7 @@ export default function GrooveMicro() {
       {/* 说明条 */}
       <div className="border-t border-[#232a38] bg-[#11151d] px-4 py-2.5 text-[11px] leading-relaxed text-[#8b95a5] md:text-xs">
         <span className="text-[#f0d9b0]">①</span> 射到槽底中心的光线沿正常（镜面）方向返回（高亮金色）&ensp;
-        <span className="text-[#f0d9b0]">②</span> 射到左半槽壁的光折向右半、右半折向左半，在腔内交叉&ensp;
+        <span className="text-[#f0d9b0]">②</span> 射到左半槽壁的光折向右半、右半折向左半；若再撞上槽壁则被吸收消失&ensp;
         <span className="text-[#f0d9b0]">③</span> 槽壁法线没有沿槽分量，反射保持方向的沿槽分量不变 → 全部出射光与槽轴夹角恒定，张成一个绕槽轴的锥面（蓝色线框）
       </div>
     </div>

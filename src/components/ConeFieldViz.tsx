@@ -85,6 +85,9 @@ export default function ConeFieldViz() {
   const [surface, setSurface] = useState<'plate' | 'disk'>('plate')
   const [grooveAngle, setGrooveAngle] = useState(0) // 默认 t̂ 沿 +X，配合左侧来光 → 锥口朝右
   const [density, setDensity] = useState(4)
+  const [coneStyle, setConeStyle] = useState<'lines' | 'surface'>('lines')
+  const [coneLenPct, setConeLenPct] = useState(100)
+  const [coneColor, setConeColor] = useState('#f0c46a')
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<{
@@ -260,11 +263,13 @@ export default function ConeFieldViz() {
     s.coneGroup.clear()
     if (cones.length === 0) return
     const spacing = surface === 'plate' ? (PLATE_W - 0.8) / (density - 1) : DISK_R / density
-    const L = Math.max(0.28, Math.min(0.55, spacing * 0.55))
+    const L = Math.max(0.28, Math.min(0.55, spacing * 0.55)) * (coneLenPct / 100)
     const NG = 8   // 半锥母线条数
     const NR = 16  // 半环分段
+    const col = new THREE.Color(coneColor)
     const linePts: THREE.Vector3[] = []
     const apexPts: THREE.Vector3[] = []
+    const surfPos: number[] = []
     const zAxis = new THREE.Vector3(0, 0, 1)
     for (const cone of cones) {
       const { apex, axis, alpha } = cone
@@ -277,29 +282,53 @@ export default function ConeFieldViz() {
           .addScaledVector(axis, cosA)
           .addScaledVector(zAxis, sinA * Math.cos(phi))
           .addScaledVector(u2, sinA * Math.sin(phi))
-      // 母线
-      for (let k = 0; k < NG; k++) {
-        const phi = -Math.PI / 2 + (Math.PI * k) / (NG - 1)
-        linePts.push(apex.clone(), apex.clone().addScaledVector(g(phi), L))
-      }
-      // 半环（长度 L 处的圆周五轴截面）
-      for (let k = 0; k < NR; k++) {
-        const p1 = -Math.PI / 2 + (Math.PI * k) / NR
-        const p2 = -Math.PI / 2 + (Math.PI * (k + 1)) / NR
-        linePts.push(apex.clone().addScaledVector(g(p1), L), apex.clone().addScaledVector(g(p2), L))
+      if (coneStyle === 'lines') {
+        // 母线
+        for (let k = 0; k < NG; k++) {
+          const phi = -Math.PI / 2 + (Math.PI * k) / (NG - 1)
+          linePts.push(apex.clone(), apex.clone().addScaledVector(g(phi), L))
+        }
+        // 半环（长度 L 处的圆周五轴截面）
+        for (let k = 0; k < NR; k++) {
+          const p1 = -Math.PI / 2 + (Math.PI * k) / NR
+          const p2 = -Math.PI / 2 + (Math.PI * (k + 1)) / NR
+          linePts.push(apex.clone().addScaledVector(g(p1), L), apex.clone().addScaledVector(g(p2), L))
+        }
+      } else {
+        // 半透明锥面（三角扇）
+        for (let k = 0; k < NR; k++) {
+          const p1 = -Math.PI / 2 + (Math.PI * k) / NR
+          const p2 = -Math.PI / 2 + (Math.PI * (k + 1)) / NR
+          const g1 = apex.clone().addScaledVector(g(p1), L)
+          const g2 = apex.clone().addScaledVector(g(p2), L)
+          surfPos.push(apex.x, apex.y, apex.z, g1.x, g1.y, g1.z, g2.x, g2.y, g2.z)
+        }
+        // 边缘两条母线
+        for (const ph of [-Math.PI / 2, Math.PI / 2]) {
+          linePts.push(apex.clone(), apex.clone().addScaledVector(g(ph), L))
+        }
       }
     }
-    const coneLines = new THREE.LineSegments(
-      new THREE.BufferGeometry().setFromPoints(linePts),
-      new THREE.LineBasicMaterial({ color: 0xf0c46a, transparent: true, opacity: 0.85 }),
-    )
-    s.coneGroup.add(coneLines)
+    if (coneStyle === 'surface' && surfPos.length) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(surfPos, 3))
+      geo.computeVertexNormals()
+      s.coneGroup.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+        color: col, transparent: true, opacity: 0.2, side: THREE.DoubleSide, depthWrite: false,
+      })))
+    }
+    if (linePts.length) {
+      s.coneGroup.add(new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(linePts),
+        new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: coneStyle === 'lines' ? 0.85 : 0.9 }),
+      ))
+    }
     const dots = new THREE.Points(
       new THREE.BufferGeometry().setFromPoints(apexPts),
       new THREE.PointsMaterial({ color: 0xe8eef5, size: 4, sizeAttenuation: false }),
     )
     s.coneGroup.add(dots)
-  }, [cones, surface, density])
+  }, [cones, surface, density, coneStyle, coneLenPct, coneColor])
 
   // 光源标记位置
   useEffect(() => {
@@ -394,6 +423,20 @@ export default function ConeFieldViz() {
           <span className="whitespace-nowrap text-[#c9d1d9]">点阵密度 {surface === 'plate' ? `${density}×${density}` : `${density - 1}环×8`}</span>
           <Slider className="w-28" min={2} max={8} step={1} value={[density]} onValueChange={(v) => setDensity(v[0])} />
         </div>
+        <div className="flex items-center gap-1">
+          <span className="mr-1">锥</span>
+          <button className={segBtn(coneStyle === 'lines')} onClick={() => setConeStyle('lines')}>线框</button>
+          <button className={segBtn(coneStyle === 'surface')} onClick={() => setConeStyle('surface')}>锥面</button>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="whitespace-nowrap">锥长 {coneLenPct}%</span>
+          <Slider className="w-20" min={40} max={300} step={10} value={[coneLenPct]} onValueChange={(v) => setConeLenPct(v[0])} />
+        </div>
+        <label className="flex cursor-pointer items-center gap-1.5">
+          <span>颜色</span>
+          <input type="color" value={coneColor} onChange={(e) => setConeColor(e.target.value)}
+            className="h-5 w-7 cursor-pointer rounded border border-[#2a3242] bg-transparent" />
+        </label>
       </div>
 
       <div ref={wrapRef} className="relative min-h-0 flex-1">

@@ -116,6 +116,7 @@ export default function GrooveMicro() {
   const [showNormals, setShowNormals] = useState(true)
   const [showConeSurf, setShowConeSurf] = useState(false)
   const [showScreen, setShowScreen] = useState(false)
+  const [pipeColor, setPipeColor] = useState('#8b95a2')
   const [playing, setPlaying] = useState(true)
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -298,7 +299,7 @@ export default function GrooveMicro() {
       geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
       geo.setIndex(indices)
       s.pipeGroup.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
-        color: 0x8b95a2, metalness: 0.9, roughness: 0.32, side: THREE.DoubleSide,
+        color: new THREE.Color(pipeColor), metalness: 0.9, roughness: 0.32, side: THREE.DoubleSide,
       })))
     }
     s.belly.position.z = -b - 0.19
@@ -462,7 +463,7 @@ export default function GrooveMicro() {
       }
     }
 
-  }, [rays, showNormals, depthPct, showConeSurf, showScreen, b, SCREEN_Y, angleI, angleP])
+  }, [rays, showNormals, depthPct, showConeSurf, showScreen, b, SCREEN_Y, angleI, angleP, pipeColor])
 
   // ---------- 光子动画 + 出射光锥标签投影 ----------
   useEffect(() => {
@@ -524,6 +525,11 @@ export default function GrooveMicro() {
         <label className="flex cursor-pointer items-center gap-2 text-xs text-[#9aa5b4]">
           <Switch checked={showScreen} onCheckedChange={setShowScreen} id="sw-screen" />
           <span>光屏</span>
+        </label>
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-[#9aa5b4]">
+          <span>槽体颜色</span>
+          <input type="color" value={pipeColor} onChange={(e) => setPipeColor(e.target.value)}
+            className="h-5 w-7 cursor-pointer rounded border border-[#2a3242] bg-transparent" />
         </label>
         <button
           className="flex items-center gap-1.5 rounded-full border border-[#2a3242] bg-[#161b25] px-3 py-1 text-xs text-[#c9d1d9] transition-colors hover:border-[#d4a054]/60 hover:text-[#f0d9b0]"

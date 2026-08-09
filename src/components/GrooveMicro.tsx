@@ -84,7 +84,7 @@ function traceRay(x0: number, iDeg: number, phiDeg: number, b: number, screenY: 
       const t = (screenY - q.y) / d1.y
       if (t > 0) return add(q, mul(d1, t))
     }
-    return add(q, mul(d1, 1.3))
+    return add(q, mul(d1, 2.8))
   }
   if (tExit < tArc && tExit < Infinity) {
     const qx = add(p1, mul(d1, tExit))

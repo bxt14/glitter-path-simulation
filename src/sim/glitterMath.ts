@@ -8,6 +8,21 @@ import type { SimParams } from './types'
 
 const DEG = Math.PI / 180
 
+/** 观察者的有效位置：平行光模式下 eyePos + h·r̂，r̂ 为入射光的镜面反射方向（水平分量不变、z 翻转） */
+export function effEye(p: { eyePos: { x: number; y: number; z: number }; lightMode: string; azimuth: number; elevation: number; specularH: number }) {
+  if (p.lightMode !== 'parallel' || !p.specularH) return p.eyePos
+  const az = p.azimuth * DEG
+  const el = p.elevation * DEG
+  const rx = -Math.cos(el) * Math.cos(az)
+  const ry = -Math.cos(el) * Math.sin(az)
+  const rz = Math.sin(el)
+  return {
+    x: p.eyePos.x + p.specularH * rx,
+    y: p.eyePos.y + p.specularH * ry,
+    z: p.eyePos.z + p.specularH * rz,
+  }
+}
+
 /** 与着色器一致的 f(Q)（Q 在 z=0 平面上；零分配，全部为标量运算） */
 export function fAt(p: SimParams, qx: number, qy: number, qz = 0): number {
   // p̂：入射光传播方向
@@ -27,9 +42,10 @@ export function fAt(p: SimParams, qx: number, qy: number, qz = 0): number {
     py = -Math.cos(el) * Math.sin(az)
   }
   // q̂：指向眼睛方向
-  const ex = p.eyePos.x - qx
-  const ey = p.eyePos.y - qy
-  const ez = p.eyePos.z - qz
+  const E = effEye(p)
+  const ex = E.x - qx
+  const ey = E.y - qy
+  const ez = E.z - qz
   const en = Math.hypot(ex, ey, ez) || 1
   // t̂：沟槽方向（XY 平面内）
   let tx = 0
@@ -104,18 +120,20 @@ export function findInitialGlitterPoint(p: SimParams, out: { x: number; y: numbe
   let ox: number
   let oy: number
   if (p.lightMode === 'point') {
-    const s = p.pointLightPos.z / (p.pointLightPos.z + p.eyePos.z)
-    ox = p.pointLightPos.x + (p.eyePos.x - p.pointLightPos.x) * s
-    oy = p.pointLightPos.y + (p.eyePos.y - p.pointLightPos.y) * s
+    const E0 = effEye(p)
+    const s = p.pointLightPos.z / (p.pointLightPos.z + E0.z)
+    ox = p.pointLightPos.x + (E0.x - p.pointLightPos.x) * s
+    oy = p.pointLightPos.y + (E0.y - p.pointLightPos.y) * s
   } else {
     const az = p.azimuth * DEG
     const el = p.elevation * DEG
     const dx = -Math.cos(el) * Math.cos(az) // 传播方向 d̂
     const dy = -Math.cos(el) * Math.sin(az)
     const dz = -Math.sin(el)
-    const t = Math.abs(dz) < 1e-8 ? 0 : p.eyePos.z / -dz
-    ox = p.eyePos.x + dx * t
-    oy = p.eyePos.y + dy * t
+    const E0 = effEye(p)
+    const t = Math.abs(dz) < 1e-8 ? 0 : E0.z / -dz
+    ox = E0.x + dx * t
+    oy = E0.y + dy * t
   }
   if (inSurfaceBounds(p, ox, oy) && Math.abs(fAt(p, ox, oy)) < 1e-6) {
     out.x = ox

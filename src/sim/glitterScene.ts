@@ -4,7 +4,7 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import type { SimParams } from './types'
 import { clamp } from './types'
-import { fAt, projectToGlitter, findInitialGlitterPoint } from './glitterMath'
+import { effEye, fAt, projectToGlitter, findInitialGlitterPoint } from './glitterMath'
 
 export interface DragUpdate {
   pointLightPos?: { x: number; y: number; z: number }
@@ -281,6 +281,7 @@ export class GlitterScene {
     check(5, p.plateWidth); check(6, p.plateDepth); check(7, p.grooveAngle); check(8, p.diskRadius)
     check(9, p.centerX); check(10, p.centerY)
     check(11, p.eyePos.x); check(12, p.eyePos.y); check(13, p.eyePos.z)
+    check(14, p.specularH)
     const flags = (p.lightMode === 'point' ? 1 : 0) + (p.surfaceType === 'disk' ? 2 : 0)
     if (String(flags) !== this.pointSnapFlags) { this.pointSnapFlags = String(flags); changed = true }
     return changed
@@ -794,7 +795,8 @@ export class GlitterScene {
     const P = this.tmpGP.set(this.pointPos.x, this.pointPos.y, GLITTER_Z + 0.02)
 
     // p̂：入射传播方向；E：眼睛
-    const E = this.tmpGE.set(p.eyePos.x, p.eyePos.y, p.eyePos.z)
+    const ee0 = effEye(p)
+    const E = this.tmpGE.set(ee0.x, ee0.y, ee0.z)
     const ph = this.tmpGPh
     if (p.lightMode === 'point') {
       ph.set(P.x - p.pointLightPos.x, P.y - p.pointLightPos.y, P.z - p.pointLightPos.z).normalize()
@@ -1045,7 +1047,15 @@ export class GlitterScene {
       p.z = Math.max(p.z, MIN_Z)
       p.x = clamp(p.x, -8, 8)
       p.y = clamp(p.y, -8, 8)
-      this.onDragUpdate({ eyePos: { x: round(p.x), y: round(p.y), z: round(p.z) } })
+      // 拖动的是有效位置，写回 base = 有效位置 − h·r̂
+      const az = this.params.azimuth * (Math.PI / 180)
+      const el = this.params.elevation * (Math.PI / 180)
+      const h = this.params.lightMode === 'parallel' ? this.params.specularH : 0
+      this.onDragUpdate({ eyePos: {
+        x: round(p.x + h * Math.cos(el) * Math.cos(az)),
+        y: round(p.y + h * Math.cos(el) * Math.sin(az)),
+        z: round(p.z - h * Math.sin(el)),
+      } })
     } else if (id === 'surface') {
       p.z = 0
       p.x = clamp(p.x, -6, 6)
@@ -1113,7 +1123,11 @@ export class GlitterScene {
     const dragId = this.tc.dragging ? (this.tc.object?.userData.dragId as string | undefined) : undefined
 
     if (dragId !== 'pointLight') this.pointLightHandle.position.set(p.pointLightPos.x, p.pointLightPos.y, p.pointLightPos.z)
-    if (dragId !== 'eye') this.eyeHandle.position.set(p.eyePos.x, p.eyePos.y, p.eyePos.z)
+    if (dragId !== 'eye') {
+      const ee = effEye(p)
+      this.eyeHandle.position.set(ee.x, Math.max(ee.y, -1e9), Math.max(ee.z, MIN_Z))
+      this.eyeHandle.position.y = ee.y
+    }
     if (dragId !== 'surface') this.surfaceGroup.position.set(p.centerX, p.centerY, 0)
     if (dragId !== 'sun') this.positionSun(p.azimuth, p.elevation)
 
@@ -1293,7 +1307,8 @@ export class GlitterScene {
   selfCheck(): string {
     const p = this.params
     const C = new THREE.Vector3(p.centerX, p.centerY, 0)
-    const E = new THREE.Vector3(p.eyePos.x, p.eyePos.y, p.eyePos.z)
+    const ee2 = effEye(p)
+    const E = new THREE.Vector3(ee2.x, ee2.y, ee2.z)
     const L = new THREE.Vector3(p.pointLightPos.x, p.pointLightPos.y, p.pointLightPos.z)
     const d = this.sunDir(p.azimuth, p.elevation).multiplyScalar(-1) // 传播方向
 

@@ -23,6 +23,9 @@ export interface SimParams {
   diskRadius: number
   /** 观察者位置（z 为竖直高度，z ≥ 0.15） */
   eyePos: Vec3
+  /** 仅平行光：观察者沿入射光镜面反射方向远离的距离 h（0 = 不偏移）。
+   *  h→∞ 时亮线趋向双曲线（远离方向是镜面反射方向 r̂，而非单纯升高 z） */
+  specularH: number
   /** 观察者视角等效焦段（全画幅 mm，16-135；垂直视场角 fov = 2·atan(12/f)） */
   focalLength: number
   /** 反射面中心（XY 平面，z 恒为 0） */
@@ -49,6 +52,7 @@ export const DEFAULT_PARAMS: SimParams = {
   grooveAngle: 0,
   diskRadius: 2,
   eyePos: { x: 0.2, y: -2.2, z: 1.7 },
+  specularH: 0,
   focalLength: 50,
   centerX: 0,
   centerY: 0,

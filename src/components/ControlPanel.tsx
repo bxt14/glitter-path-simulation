@@ -154,6 +154,14 @@ export default function ControlPanel({ params, onChange, onPreset }: Props) {
           <SliderRow label="眼睛 X" value={p.eyePos.x} min={-8} max={8} step={0.1} onChange={(v) => onChange({ eyePos: { ...p.eyePos, x: v } })} />
           <SliderRow label="眼睛 Y" value={p.eyePos.y} min={-8} max={8} step={0.1} onChange={(v) => onChange({ eyePos: { ...p.eyePos, y: v } })} />
           <SliderRow label="眼睛 Z（高度）" value={p.eyePos.z} min={0.15} max={8} step={0.05} onChange={(v) => onChange({ eyePos: { ...p.eyePos, z: v } })} />
+          {p.lightMode === 'parallel' && (
+            <>
+              <SliderRow label="沿镜面方向远离 h" value={p.specularH} min={0} max={40} step={0.1} onChange={(v) => onChange({ specularH: v })} />
+              <p className="text-[10px] leading-relaxed text-[#66707e]">
+                观察者沿入射光的镜面反射方向 r̂ 远离（不是单纯升高 z）；h → ∞ 时亮线趋向双曲线
+              </p>
+            </>
+          )}
           <SliderRow label="等效焦段" value={p.focalLength} min={16} max={135} step={1} unit="mm" onChange={(v) => onChange({ focalLength: v })} />
           <div className="flex gap-1.5">
             {[24, 35, 50, 85].map((f) => (
